@@ -1,7 +1,7 @@
 //! Fetch JSON data from URLs, with auth and retry. Mirrors `http_help`.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -45,14 +45,15 @@ fn auth_header(url: &url::Url, token: Option<&str>) -> Option<String> {
 
 /// Look up a machine's credentials in `~/.netrc` (or `_NETRC`).
 fn netrc_auth(url: &url::Url) -> Option<String> {
+    netrc_auth_from(url, &netrc_path())
+}
+
+/// Resolve the `.netrc` credentials for `url`'s host from an explicit file
+/// path. Split from [`netrc_auth`] so tests can point at a temp file instead
+/// of the process `HOME`.
+fn netrc_auth_from(url: &url::Url, path: &Path) -> Option<String> {
     let host = url.host_str()?;
-    let netrc_path = std::env::var("_NETRC")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            PathBuf::from(home).join(".netrc")
-        });
-    let contents = std::fs::read_to_string(netrc_path).ok()?;
+    let contents = std::fs::read_to_string(path).ok()?;
     let entry = parse_netrc(&contents, host)?;
     // GitHub accepts the login/password pair as basic auth; with a token in
     // the password field this is the common .netrc setup.
@@ -64,14 +65,33 @@ fn netrc_auth(url: &url::Url) -> Option<String> {
     ))
 }
 
+/// The `.netrc` file to read: the stdlib `netrc.netrc()` honours the `NETRC`
+/// environment variable, else falls back to `~/.netrc`.
+fn netrc_path() -> PathBuf {
+    let netrc = std::env::var("NETRC").ok().filter(|p| !p.is_empty());
+    let home = std::env::var("HOME").ok();
+    netrc_path_from(netrc.as_deref(), home.as_deref())
+}
+
+/// Pure resolution of the netrc path from already-read env values (so tests
+/// don't mutate process env, which races across parallel tests). An empty
+/// `NETRC` is treated as unset, matching stdlib `netrc.netrc()`.
+fn netrc_path_from(netrc: Option<&str>, home: Option<&str>) -> PathBuf {
+    if let Some(p) = netrc.filter(|p| !p.is_empty()) {
+        return PathBuf::from(p);
+    }
+    PathBuf::from(home.unwrap_or_default()).join(".netrc")
+}
+
 struct NetrcEntry {
     login: String,
     password: String,
 }
 
-/// Minimal `.netrc` parser: build a `machine -> entry` map and return the one
-/// matching `host`. Handles the `machine`/`login`/`password` tokens; `default`
-/// entries are ignored (GitHub always matches a concrete machine).
+/// Minimal `.netrc` parser mirroring the stdlib `netrc.authenticators(host)`:
+/// return the entry for `host`, or the `default` entry when the host has no
+/// match, or `None` when neither exists. Handles the `machine`/`default`/
+/// `login`/`password` tokens; missing login/password default to empty strings.
 fn parse_netrc(contents: &str, host: &str) -> Option<NetrcEntry> {
     use std::collections::HashMap;
     let mut machines: HashMap<String, NetrcEntry> = HashMap::new();
@@ -86,6 +106,14 @@ fn parse_netrc(contents: &str, host: &str) -> Option<NetrcEntry> {
                     password: String::new(),
                 });
                 current = Some(name);
+            }
+            // `default` applies to any host without its own `machine` entry.
+            "default" => {
+                machines.entry("default".to_string()).or_insert(NetrcEntry {
+                    login: String::new(),
+                    password: String::new(),
+                });
+                current = Some("default".to_string());
             }
             "login" => {
                 let value = tokens.next()?.to_string();
@@ -106,7 +134,11 @@ fn parse_netrc(contents: &str, host: &str) -> Option<NetrcEntry> {
             _ => {}
         }
     }
-    machines.remove(host)
+    // A concrete host wins over `default` (stdlib authenticators semantics).
+    if let Some(entry) = machines.remove(host) {
+        return Some(entry);
+    }
+    machines.remove("default")
 }
 
 /// GET a URL and return the response body text, with the original's retry
@@ -234,8 +266,55 @@ mod tests {
         let e = parse_netrc(contents, "github.com").expect("github.com entry");
         assert_eq!(e.login, "octocat");
         assert_eq!(e.password, "ghp_tok");
-        // A host with no entry yields None.
+        // A host with no entry and no `default` yields None.
         assert!(parse_netrc(contents, "gitlab.com").is_none());
+    }
+
+    #[test]
+    fn netrc_default_entry_is_fallback() {
+        // Mirrors stdlib authenticators(): a `default` entry serves hosts with
+        // no `machine` of their own, but a concrete machine wins.
+        let contents = "machine github.com\n  login octocat\n  password gh\n\
+                        default\n  login anon\n  password ftp\n";
+        let d = parse_netrc(contents, "gitlab.com").expect("default fallback");
+        assert_eq!(d.login, "anon");
+        let g = parse_netrc(contents, "github.com").expect("concrete machine");
+        assert_eq!(g.login, "octocat");
+    }
+
+    #[test]
+    fn netrc_auth_from_reads_file_and_encodes() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("watchgha-netrc-test-{}.txt", std::process::id()));
+        std::fs::write(&path, "machine github.com\nlogin oc\npassword tok\n").unwrap();
+        let url = url::Url::parse("https://github.com/owner/repo").unwrap();
+        let header = netrc_auth_from(&url, &path).expect("basic header");
+        assert_eq!(header, "Basic b2M6dG9r");
+        // No matching host or default -> no auth.
+        let other = url::Url::parse("https://gitlab.com/x/y").unwrap();
+        assert!(netrc_auth_from(&other, &path).is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn netrc_path_prefers_env_then_home() {
+        // Mirrors stdlib netrc.netrc(): NETRC env wins, else $HOME/.netrc.
+        // Pure inputs avoid mutating process env (races parallel tests).
+        assert_eq!(
+            netrc_path_from(Some("/tmp/custom-netrc"), Some("/home/u")),
+            PathBuf::from("/tmp/custom-netrc")
+        );
+        assert_eq!(
+            netrc_path_from(None, Some("/home/u")),
+            PathBuf::from("/home/u/.netrc")
+        );
+        // An empty NETRC is treated as unset.
+        assert_eq!(
+            netrc_path_from(Some(""), Some("/home/u")),
+            PathBuf::from("/home/u/.netrc")
+        );
+        // No HOME at all degrades to a bare ".netrc" (home empty).
+        assert_eq!(netrc_path_from(None, None), PathBuf::from(".netrc"));
     }
 
     #[test]
