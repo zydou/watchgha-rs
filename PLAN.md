@@ -5,7 +5,7 @@
 - Upstream pin: <https://github.com/nedbat/watchgha.git> @ 34d1a36096a2b6cfd5fe3d3a7d739d7ab1de9343 (2.7.0)
 - Sync target: none
 - Oracle binary: `.oracle-venv/bin/watchgha` (watchgha 2.7.0, built from `upstream/` @ 34d1a36 via `uv pip install ./upstream`, Python 3.13.18)
-- Working end-to-end: CLI skeleton + URL/GIT resolution + HTTP fetch + DATA aggregation + RENDER (plain) + watch LOOP (incl. Ctrl-C→exit 2 and TTY alt-screen/SIGWINCH redraw) + deprecated `watch_gha_runs` entry point; 9/9 parity cases green
+- Working end-to-end: CLI skeleton + URL/GIT resolution + HTTP fetch + DATA aggregation + RENDER (plain) + watch LOOP (incl. Ctrl-C→exit 2 and TTY alt-screen/SIGWINCH redraw) + deprecated `watch_gha_runs` entry point; 12/12 parity cases green
 - Current stage: S4
 - Next: S4 Harden — fixed `.netrc` contract (B-1: `NETRC` env + `default` fallback); remaining edge matrix (SAVE_DATA dump, retry timing, large/binary input, concurrent invocation)
 - Blockers: none
@@ -143,6 +143,7 @@ Environment variables the original reads:
 - [ ] Phase 4: Harden
   - [x] parity for `--sha` (OPT-SHA: `head_sha=` query) and enterprise `GITHUB_SERVER_URL` (URL-4 SSH remote) — 9/9 cases green
   - [x] `.netrc` contract hardened (B-1: `NETRC` env + `default` fallback); unit-tested deterministically
+  - [x] `--only` edge cases parity: uppercase word (no match — filter words aren't lowercased), comma+space multiword, no-match (12/12 cases green)
   - [ ] SAVE_DATA dump parity (HTTP-4; needs harness file-capture + timestamp normalization)
   - [ ] retry timing / 502 path unit evidence (HTTP-3; behavior confirmed equivalent to upstream, hard to mock deterministically)
   - [ ] remaining edge matrix: large/binary input, malformed config, env combinations, concurrent invocation
