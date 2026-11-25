@@ -6,6 +6,7 @@ mod error;
 mod git_help;
 mod http;
 mod render;
+mod terminal;
 mod time_util;
 mod urls;
 
@@ -121,18 +122,6 @@ fn osc_9_4(state: u8, percent: u64) {
     let _ = std::io::stdout().flush();
 }
 
-/// Effective console width, mirroring rich's `Console`: `COLUMNS` env if set,
-/// else the terminal width, else 80.
-fn console_width() -> usize {
-    if let Ok(cols) = std::env::var("COLUMNS")
-        && let Ok(n) = cols.trim().parse::<usize>()
-        && n > 0
-    {
-        return n;
-    }
-    80
-}
-
 struct GhaWatcher {
     urls: Vec<String>,
     only_words: Option<Vec<String>>,
@@ -168,11 +157,22 @@ impl GhaWatcher {
         }
 
         if !status.done && !INTERRUPTED.load(Ordering::SeqCst) {
-            // Live redraw until all jobs finish.
+            // Live redraw until all jobs finish. On a TTY this uses the
+            // alternate screen (restored on drop, mirroring rich's
+            // `console.screen()`), and SIGWINCH repaints at the new size
+            // (LOOP-3). On a non-TTY there is no live region; the final frame
+            // is printed once below.
             let mut last_draw = Instant::now();
+            let _alt = if is_tty {
+                terminal::register_sigwinch();
+                terminal::enter_alt_screen();
+                Some(AltScreen)
+            } else {
+                None
+            };
             loop {
                 if is_tty {
-                    render_progress(&output, console_width());
+                    terminal::redraw(&output);
                 } else {
                     print!("{output}");
                     let _ = std::io::stdout().flush();
@@ -184,6 +184,10 @@ impl GhaWatcher {
                 while last_draw.elapsed() < interval {
                     if INTERRUPTED.load(Ordering::SeqCst) {
                         break;
+                    }
+                    if is_tty && terminal::take_resized() {
+                        // Repaint at the new size (LOOP-3).
+                        terminal::redraw(&output);
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
@@ -201,8 +205,10 @@ impl GhaWatcher {
         }
 
         osc_9_4(0, 0);
+        // `_alt` drops here, restoring the main screen before the final frame
+        // is printed below it (mirroring the original leaving `console.screen()`
+        // then `console.print(output)`).
         if is_tty {
-            // Move below the live region and print the final frame.
             println!();
         }
         print!("{output}");
@@ -228,10 +234,16 @@ fn update_terminal_progress(status: &Status) {
     osc_9_4(state, percent);
 }
 
-/// Render a live frame in place (TTY only). A minimal alternate approach:
-/// clear from cursor and reprint. Not exercised by parity (non-TTY).
-fn render_progress(_frame: &str, _width: usize) {
-    // The original uses rich's alternate screen; keep a simple redraw.
+/// RAII guard for the alternate screen. Entering is done explicitly before the
+/// live loop; dropping the guard leaves the alternate screen, restoring the
+/// main screen even on an early break (mirrors rich's `console.screen()`
+/// context manager).
+struct AltScreen;
+
+impl Drop for AltScreen {
+    fn drop(&mut self) {
+        terminal::leave_alt_screen();
+    }
 }
 
 #[cfg(test)]
