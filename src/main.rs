@@ -11,14 +11,19 @@ mod urls;
 
 use std::io::{IsTerminal, Write};
 use std::process;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
 
 use crate::cli::Cli;
 use crate::data::{Status, draw_runs};
-use crate::error::{EXIT_FAILURE, EXIT_OK, fatal};
+use crate::error::{EXIT_FAILURE, EXIT_INTERRUPTED, EXIT_OK, fatal};
 use crate::http::get_data;
+
+/// Set by the Ctrl-C (SIGINT) handler; checked between poll iterations so the
+/// watch loop can stop, print the final frame, and exit 2 (LOOP-6).
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 fn main() {
     // The project ships two console scripts from one binary: `watchgha` (the
@@ -45,6 +50,17 @@ fn main() {
 
 /// The real `watchgha` command.
 fn watchgha_main() -> i32 {
+    // Install the SIGINT handler once. On Ctrl-C it sets INTERRUPTED; the watch
+    // loop notices between poll iterations, prints the final frame, and exits 2
+    // (LOOP-6). The `termination` feature makes ctrlc re-raise on a second
+    // Ctrl-C so a stuck run can still be force-quit.
+    ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst)).unwrap_or_else(|e| {
+        fatal(
+            format!("Couldn't install Ctrl-C handler: {e}"),
+            EXIT_FAILURE,
+        )
+    });
+
     let args = Cli::parse();
     let only_words = args.only_words();
 
@@ -146,16 +162,12 @@ impl GhaWatcher {
             let (o, s) = self.get_gha_display();
             output = o;
             status = s;
-            if wait_for_start {
-                if !status.done {
-                    break;
-                }
-            } else {
+            if INTERRUPTED.load(Ordering::SeqCst) || !wait_for_start || !status.done {
                 break;
             }
         }
 
-        if !status.done {
+        if !status.done && !INTERRUPTED.load(Ordering::SeqCst) {
             // Live redraw until all jobs finish.
             let mut last_draw = Instant::now();
             loop {
@@ -166,10 +178,17 @@ impl GhaWatcher {
                     let _ = std::io::stdout().flush();
                 }
                 update_terminal_progress(&status);
-                let elapsed = last_draw.elapsed();
+                // Sleep in short slices so a Ctrl-C during the poll interval is
+                // noticed promptly rather than after up to `poll` seconds.
                 let interval = Duration::from_secs(poll.max(0) as u64);
-                if elapsed < interval {
-                    std::thread::sleep(interval - elapsed);
+                while last_draw.elapsed() < interval {
+                    if INTERRUPTED.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                if INTERRUPTED.load(Ordering::SeqCst) {
+                    break;
                 }
                 last_draw = Instant::now();
                 let (o, s) = self.get_gha_display();
@@ -188,6 +207,9 @@ impl GhaWatcher {
         }
         print!("{output}");
         let _ = std::io::stdout().flush();
+        if INTERRUPTED.load(Ordering::SeqCst) {
+            fatal("** interrupted **", EXIT_INTERRUPTED);
+        }
         if status.succeeded {
             EXIT_OK
         } else {

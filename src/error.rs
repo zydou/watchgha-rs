@@ -22,6 +22,7 @@ impl std::error::Error for WatchGhaError {}
 /// Process exit codes (INV: match the original's contract).
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_FAILURE: i32 = 1;
+pub const EXIT_INTERRUPTED: i32 = 2;
 
 /// Print a message to stderr and exit with `status` (default 1).
 ///
