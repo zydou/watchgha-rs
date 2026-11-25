@@ -1,0 +1,14 @@
+---
+# actionlint v1.7.12 (the latest version as of 2026-11-11) does not know the
+# ubuntu-26.04(-arm) GitHub-hosted runner label and rejects it as unknown.
+# Upstream request: https://github.com/rhysd/actionlint/issues/682
+
+
+# Both labels below are real GitHub-hosted runners, not self-hosted;
+# this key is actionlint's mechanism for teaching it a label it does not yet know.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm
+
+# Delete this file once the latest actionlint release knows the above labels.

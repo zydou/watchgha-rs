@@ -1,0 +1,235 @@
+---
+name: Release
+
+# Pull requests run lint + tests only, for fast feedback. Pushes to `main` build, verify, and
+# publish the moving `nightly` release; `v*` tags publish that tag. Feature branches get CI
+# through their pull request only, so a branch push never publishes. `workflow_dispatch` builds
+# the checked-out ref and attaches it to the release named by the `release` input (default
+# `nightly`).
+on:
+  push:
+    branches: [main]
+    tags: [v*]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release:
+        required: true
+        description: release to attach the binaries to
+        default: nightly
+        type: string
+
+# Attaching to a release needs more than the read-only default token.
+permissions:
+  contents: write
+
+# A re-pushed tag or a second dispatch supersedes the run in flight for the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO: cargo
+  RUSTFLAGS: -D warnings
+  RUST_BACKTRACE: 1
+  # Pin the minimum macOS version so the darwin artifacts support macOS 13.x.
+  MACOSX_DEPLOYMENT_TARGET: "13.0"  # Only the apple-darwin targets consume this; the linux targets ignore it.
+
+jobs:
+  lint:
+    # Format, static analysis, and dependency auditing are host-independent, so run them once.
+    # Every target job depends on this so a broken build never wastes a cross-compile.
+    name: fmt & clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        # No --all-features: the project keeps its feature set minimal.
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
+
+  target:
+    # One job per (platform, ABI) pair. A target publishes its artifact only when its own test AND
+    # build both succeed and the run was not a pull request. Releases are per-target, not atomic: if
+    # one target fails on a push, the ones that succeeded still publish and the failed one is simply
+    # absent from that release.
+    name: ${{ matrix.target }}
+    needs: [lint]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The `*-gnu` targets pin a minimum glibc via the `.2.18` target suffix. Without it zig
+          # silently targets whatever its own release defaults to (which floats with the zig
+          # version) and can be newer than the 2.18 the project documents. `*-musl` targets are
+          # fully static and need no pin.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            zig: true
+            zig_target: x86_64-unknown-linux-gnu.2.18
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            zig: true
+            zig_target: x86_64-unknown-linux-musl
+          # The aarch64-linux targets build on a native arm64 runner (ubuntu-26.04-arm) rather than
+          # cross-compiling on x86_64. zigbuild still applies the gnu glibc pin, but it no longer
+          # needs QEMU — the runner's arch matches the target, so it builds natively AND can run the
+          # aarch64 test binary directly. That is why every target in this matrix sets no `test`
+          # flag: each one executes on a runner whose arch matches it, so all of them run tests.
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-26.04-arm
+            zig: true
+            zig_target: aarch64-unknown-linux-gnu.2.18
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-26.04-arm
+            zig: true
+            zig_target: aarch64-unknown-linux-musl
+          # The darwin targets build natively on mac runners with plain cargo — no zig, since the
+          # runner's arch already matches the target.
+          - target: x86_64-apple-darwin
+            runner: macos-26-intel
+            zig: false
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            zig: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # The linux targets build through cargo-zigbuild, which needs two pieces installed: the `zig`
+      # compiler (linker/cross-libc provider) and the `cargo-zigbuild` wrapper that drives it. On
+      # the x86_64 runner it cross-compiles; on the arm64 runner it builds the matching-arch target
+      # natively (still applying the gnu glibc pin). macOS builds natively with plain cargo and
+      # needs neither.
+      - name: Install zig
+        if: ${{ matrix.zig }}
+        uses: vercel-labs/setup-zig@v1
+
+      - name: Install cargo-zigbuild
+        if: ${{ matrix.zig }}
+        shell: bash
+        run: |
+          # Fetch a prebuilt cargo-zigbuild binary rather than `cargo install cargo-zigbuild`,
+          # which spends several minutes compiling a tool the job uses once.
+          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall --locked --no-confirm cargo-zigbuild
+
+      - name: cache
+        uses: Swatinem/rust-cache@v2
+
+      # Plain `cargo test`, not `cargo zigbuild test`: `cargo zigbuild` only wraps `cargo build`
+      # (it drives zig as the linker for cross-compiling), and has no `test` subcommand. Every
+      # target here runs on a runner whose arch matches it, so each tests natively and zig is not
+      # involved in testing at all. The build step below is where the gnu targets' `.2.18` glibc
+      # pin is actually applied.
+      - name: Test ${{ matrix.target }}
+        run: cargo test --locked --all-targets --target ${{ matrix.target }}
+
+      # Everything below is skipped on pull requests: they get the test signal above
+      # without building or publishing anything.
+      - name: Build release binary
+        if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+        # Cross-compile the linux targets with cargo-zigbuild (zig linker);
+        # build the darwin targets natively with plain cargo.
+        run: cargo ${{ matrix.zig && 'zigbuild' || 'build' }} --release --locked --target ${{ matrix.zig_target || matrix.target }}
+
+      - name: Verify Linux artifact
+        if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && matrix.zig }}
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/watchgha"
+          case "${{ matrix.target }}" in
+            *-linux-gnu)
+              # The `.2.18` suffix is the portability contract: fail if the binary needs newer symbols.
+              pin="${{ matrix.zig_target }}"
+              pin="${pin#*-linux-gnu.}"
+              max="$(readelf --version-info "$bin" | grep -o 'GLIBC_[0-9.]*' | sed 's/^GLIBC_//' | sort -V | tail -1)"
+              echo "highest required glibc: ${max:-none}; pin: $pin"
+              if [[ "$(printf '%s\n%s\n' "$pin" "$max" | sort -V | tail -1)" != "$pin" ]]; then
+                echo "artifact requires a newer glibc than the pinned $pin" >&2
+                exit 1
+              fi
+              ;;
+            *-linux-musl)
+              if ! file "$bin" | grep -q 'statically linked'; then
+                echo "musl artifact is not statically linked" >&2
+                exit 1
+              fi
+              ;;
+          esac
+
+      - name: Smoke test
+        if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+        run: target/${{ matrix.target }}/release/watchgha --version
+
+      - name: Package ${{ matrix.target }}
+        if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          cd "target/${{ matrix.target }}/release"
+          tar -cJf "watchgha-${{ matrix.target }}.tar.xz" watchgha
+          mv "watchgha-${{ matrix.target }}.tar.xz" "$GITHUB_WORKSPACE/"
+
+      # A nightly is a moving target reusing one `nightly` release, and the release action
+      # only sets the body when it is explicitly provided — otherwise it retains whatever the
+      # release already had, so the notes would stay frozen at the first nightly. Compute a
+      # body that tracks the commit (and points the release at it) so each nightly push
+      # refreshes the notes. Kept to commit-level facts so all matrix jobs write the same body
+      # no matter which finishes last. Tag pushes leave it empty to keep the tag annotation.
+      - name: Compute nightly notes
+        if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref_type != 'tag' }}
+        run: |
+          {
+            echo "BODY<<EOF"
+            echo "[Automated build]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) of [$GITHUB_REPOSITORY@${GITHUB_SHA::7}]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA):"
+            echo
+            git log -1 --format=%B
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Release
+        if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+        env:
+          # A tag push releases that tag; a dispatch releases to the name given in the `release` input;
+          # any other push releases to nightly.
+          # The action creates the release — and the tag — when the name is missing.
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || (github.event_name == 'workflow_dispatch' && inputs.release) || 'nightly' }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          files: watchgha-${{ matrix.target }}.tar.xz
+          # Empty on a tag push (keeps the tag annotation as the notes); set on a nightly so the
+          # notes track the commit instead of freezing at the first nightly's.
+          body: ${{ env.BODY }}
+          # Point the release at this commit so a nightly's diff/notes reflect the latest push.
+          target_commitish: ${{ github.sha }}
+          # A nightly build is a moving target, not a real release: keep it
+          # from being marked as the repo's "Latest" so it never shadows the
+          # latest `v*` tag. Only tag pushes are the official latest.
+          make_latest: ${{ github.ref_type == 'tag' }}

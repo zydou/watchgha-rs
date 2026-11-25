@@ -1,0 +1,22 @@
+[package]
+description = "A Rust reimplementation of the watchgha."
+edition = "2024"
+license-file = "LICENSE"
+name = "watchgha"
+repository = "https://github.com/zydou/watchgha-rs"
+version = "2.7.0"
+
+[[bin]]
+name = "watchgha"
+path = "src/main.rs"
+
+[profile.dev]
+debug = "line-tables-only"
+opt-level = 1
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+panic = "abort"
+strip = true
