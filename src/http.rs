@@ -9,6 +9,10 @@ use crate::error::WatchGhaError;
 
 /// Status codes the inner fetch retries on (mirrors `RETRY_STATUS_CODES`).
 const RETRY_STATUS_CODES: [u16; 1] = [502];
+/// Total attempts per URL. The original retries a 502 up to 3× inside an outer
+/// any-error retry of 3× (up to 9 attempts); the port folds both into one loop,
+/// so this is the total (see D-5).
+const RETRY_ATTEMPTS: u32 = 3;
 
 /// Install the `ring` TLS crypto provider once, before any client is built.
 /// We use reqwest's `rustls-no-provider` (to avoid the default `aws-lc-rs`,
@@ -141,20 +145,40 @@ fn parse_netrc(contents: &str, host: &str) -> Option<NetrcEntry> {
     machines.remove("default")
 }
 
-/// GET a URL and return the response body text, with the original's retry
-/// behavior: an inner loop retries 502s, and the caller-facing `get_data`
-/// wraps that in an outer retry on any error.
+/// GET a URL and return the response body text, retrying any error up to
+/// `RETRY_ATTEMPTS` times with `0.05*2^n` backoff. See D-5: the original wraps
+/// an inner 502 retry in an outer any-error retry; the port folds both into
+/// this single loop, so a persistently-failing URL is attempted fewer times.
 pub fn get_data(url: &str) -> Result<String, WatchGhaError> {
     let save = std::env::var("SAVE_DATA")
         .map(|v| v == "1")
         .unwrap_or(false);
+    retry_times(
+        || get_once(url, save),
+        RETRY_ATTEMPTS,
+        |n| Duration::from_millis(50 * 2u64.pow(n)),
+        std::thread::sleep,
+    )
+}
+
+/// Retry `op` up to `attempts` times, sleeping `backoff(n)` after each failed
+/// attempt via `sleep`. Returns the last error if every attempt fails. `op` and
+/// `sleep` are injected so the attempt count is deterministically testable.
+fn retry_times<T>(
+    mut op: impl FnMut() -> Result<T, WatchGhaError>,
+    attempts: u32,
+    backoff: impl Fn(u32) -> Duration,
+    mut sleep: impl FnMut(Duration),
+) -> Result<T, WatchGhaError> {
     let mut last_err: Option<WatchGhaError> = None;
-    for ntry in 0..3 {
-        match get_once(url, save) {
+    for ntry in 0..attempts {
+        match op() {
             Ok(text) => return Ok(text),
             Err(e) => {
                 last_err = Some(e);
-                std::thread::sleep(Duration::from_millis(50 * 2u64.pow(ntry)));
+                if ntry + 1 < attempts {
+                    sleep(backoff(ntry));
+                }
             }
         }
     }
@@ -341,5 +365,48 @@ mod tests {
         // when no entry matches, as here without a HOME netrc).
         assert_eq!(auth_header(&url, Some("")), netrc_auth(&url));
         assert_eq!(auth_header(&url, None), netrc_auth(&url));
+    }
+
+    #[test]
+    fn retry_times_attempts_three_then_gives_up() {
+        // Injected zero sleep keeps the test fast; count the attempts.
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = AtomicU32::new(0);
+        let res: Result<String, WatchGhaError> = retry_times(
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Err(WatchGhaError("boom".into()))
+            },
+            RETRY_ATTEMPTS,
+            |n| Duration::from_millis(50 * 2u64.pow(n)),
+            |_| {},
+        );
+        assert!(res.is_err(), "persistent failure yields the last error");
+        assert_eq!(attempts.load(Ordering::SeqCst), RETRY_ATTEMPTS);
+    }
+
+    #[test]
+    fn retry_times_stops_on_first_success() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let attempts = AtomicU32::new(0);
+        let res = retry_times(
+            || {
+                let n = attempts.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    Err(WatchGhaError("transient".into()))
+                } else {
+                    Ok("ok".to_string())
+                }
+            },
+            RETRY_ATTEMPTS,
+            |_| Duration::ZERO,
+            |_| {},
+        );
+        assert_eq!(res.unwrap(), "ok");
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "retries once then succeeds"
+        );
     }
 }
