@@ -1,0 +1,12 @@
+{
+  "exit_code": 0,
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/repos/owner/repo/actions/runs",
+      "query": "per_page=100&branch=main"
+    }
+  ],
+  "stderr": "",
+  "stdout": "\u001b]9;4;0;0\u001b\\"
+}

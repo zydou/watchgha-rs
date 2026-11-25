@@ -97,5 +97,44 @@
    "main"
   ],
   "server_url": "git@git.mydomain.com"
+ },
+ {
+  "name": "mock_completed_only_uppercase",
+  "kind": "mock",
+  "spec": "completed",
+  "local_repo": {
+   "remote": "https://github.com/owner/repo.git",
+   "branch": "main"
+  },
+  "args": [
+   "--only",
+   "TESTS"
+  ]
+ },
+ {
+  "name": "mock_completed_only_multiword",
+  "kind": "mock",
+  "spec": "completed",
+  "local_repo": {
+   "remote": "https://github.com/owner/repo.git",
+   "branch": "main"
+  },
+  "args": [
+   "--only",
+   "tests, quality"
+  ]
+ },
+ {
+  "name": "mock_completed_only_nomatch",
+  "kind": "mock",
+  "spec": "completed",
+  "local_repo": {
+   "remote": "https://github.com/owner/repo.git",
+   "branch": "main"
+  },
+  "args": [
+   "--only",
+   "zzz"
+  ]
  }
 ]
