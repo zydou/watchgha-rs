@@ -2,7 +2,11 @@
   {
     "name": "help",
     "kind": "plain",
-    "args": ["--help"]
+    "args": ["--help"],
+    "structural_stdout": [
+      "--sha", "--poll", "--wait", "--wait-for-start",
+      "--only", "--message", "--help", "REPO", "BRANCH"
+    ]
   },
   {
     "name": "err_url_repo_needs_branch",

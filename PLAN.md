@@ -5,23 +5,26 @@
 - Upstream pin: <https://github.com/nedbat/watchgha.git> @ 34d1a36096a2b6cfd5fe3d3a7d739d7ab1de9343 (2.7.0)
 - Sync target: none
 - Oracle binary: `.oracle-venv/bin/watchgha` (watchgha 2.7.0, built from `upstream/` @ 34d1a36 via `uv pip install ./upstream`, Python 3.13.18)
-- Working end-to-end: none yet (stub prints version)
-- Current stage: S0
-- Next: finish S0 inventory classification, then S1 oracle
+- Working end-to-end: CLI skeleton + URL/GIT resolution + HTTP fetch + DATA aggregation + RENDER (plain) + watch LOOP; 7/7 parity cases green
+- Current stage: S2
+- Next: land S2 walking skeleton via PR, then S3 slices (remaining LOOP alt-screen/SIGWINCH/Ctrl-C, DEP-1 deprecated entry point)
 - Blockers: none
+
+Dependency decisions (INV-DEPS mapping, finalized in S2):
+
+- `click` → `clap` (derive)
+- `rich` → hand-rolled renderer (`render.rs`): same markup, plain-text strip on non-TTY
+- `httpx` (+`NetRCAuth`) → `reqwest` (blocking, rustls) + manual `.netrc` parse (`http.rs`)
+- `trio` → std threads (`main.rs` watch loop)
+- `dulwich` → pure-Rust `.git` reader (`git_help.rs`); no git dependency
+- `datetime`/`pytz` → `jiff` 1.0.3 (replaced `chrono` 0.4.45, which RUSTSEC-2026-0543 flags unmaintained; G-AUDIT red until swapped)
+- `exceptiongroup` → not needed (no structured concurrency)
 
 ## Original overview (from reading upstream @ 34d1a36)
 
 `watchgha` is a Python terminal application that watches GitHub Actions runs on a branch. It resolves a repo (local dir or GitHub URL) + branch into GitHub API URLs, repeatedly fetches workflow runs and their jobs, groups runs into "events", renders a live table (rich), and refreshes until all jobs finish. Entry points: `watchgha.watch_runs:main` (the `watchgha` command) and a deprecated `watch_gha_runs` wrapper.
 
-Original deps → Rust mapping (to finalize in S2/S3):
-
-- `click` (CLI) → `clap`
-- `rich` (rendering, alt-screen, styles) → terminal rendering crate (decide in S2)
-- `httpx` (+`NetRCAuth`) → `reqwest` (+ .netrc handling)
-- `trio` (async + nurseries) → a Rust async runtime (`tokio` or `async-std`) or bounded threads
-- `dulwich` (git config remotes, active branch) → `git2` or shell out to `git`
-- `exceptiongroup` (structured concurrency error handling) → language-level handling
+The finalized original-deps → Rust mapping is recorded in the Progress snapshot above.
 
 Environment variables the original reads:
 
@@ -87,11 +90,12 @@ Environment variables the original reads:
 
 ### Divergences (D-###)
 
-| ID  | Capability | Scenario                      | Original behavior                     | Rust behavior                                            | Rationale                                                                | Parity case |
-| --- | ---------- | ----------------------------- | ------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------ | ----------- |
-| D-1 | HELP-1     | `watchgha --help`             | click-generated help text             | clap-generated help; same options/structure, our wording | Help text is not functional (INV-PARITY); wording is rewritten per guide | parity: options present, exit 0 |
-| D-2 | HTTP-2     | Private repo, no GITHUB_TOKEN | httpx `NetRCAuth` reads `~/.netrc`    | TBD in S3 (reqwest + .netrc crate or manual parse)       | Must preserve `.netrc` auth or register non-portable                     | parity: auth header from .netrc |
-| D-3 | DEP-1      | `watch_gha_runs` invoked      | Deprecated warning + sleep + delegate | Reimplement command + warning + delay                    | Backward-compat entry point is in scope (a CLI)                          | parity: warning then normal run |
+| ID  | Capability | Scenario                      | Original behavior                              | Rust behavior                                            | Rationale                                                                                                                                    | Parity case |
+| --- | ---------- | ----------------------------- | ---------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| D-1 | HELP-1     | `watchgha --help`             | click-generated help text                      | clap-generated help; same options/structure, our wording | Help text is not functional (INV-PARITY); wording is rewritten per guide                                                                     | parity: options present, exit 0 |
+| D-2 | HTTP-2     | Private repo, no GITHUB_TOKEN | httpx `NetRCAuth` reads `~/.netrc`             | TBD in S3 (reqwest + .netrc crate or manual parse)       | Must preserve `.netrc` auth or register non-portable                                                                                         | parity: auth header from .netrc |
+| D-3 | DEP-1      | `watch_gha_runs` invoked      | Deprecated warning + sleep + delegate          | Reimplement command + warning + delay                    | Backward-compat entry point is in scope (a CLI)                                                                                              | parity: warning then normal run |
+| D-4 | CLI-1      | `watchgha --version`          | click command has no `--version` flag (errors) | clap `version` → prints `watchgha 2.7.0`, exit 0         | G-SMOKE gate requires a version invocation; version output is non-functional (INV-PARITY), so adding it is safe and expected of a native CLI | smoke: `watchgha --version` exit 0 |
 
 ### Bugs fixed (B-###)
 
@@ -117,9 +121,9 @@ Environment variables the original reads:
   - [x] Capture from original v2.7.0 binary; provenance recorded in Progress snapshot
   - [x] Self-check green against original (7/7 cases deterministic)
 - [ ] Phase 2: Skeleton
-  - [ ] CLI skeleton (clap), error/exit model, config/env loading
-  - [ ] One self-contained slice end to end
-  - [ ] CI green: G-FMT/G-LINT/G-TEST/G-PARITY
+  - [x] CLI skeleton (clap), error/exit model, config/env loading
+  - [x] One self-contained slice end to end (URL/GIT → HTTP → DATA → RENDER → LOOP with 7 mock parity cases)
+  - [x] CI green: G-FMT/G-LINT/G-TEST/G-PARITY (parity job wired into release.yml; local gates green)
 - [ ] Phase 3: Slices (bottom-up)
   - [ ] TIME-* pure helpers
   - [ ] URL-* / GIT-* repo+branch resolution

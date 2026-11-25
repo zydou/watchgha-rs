@@ -225,15 +225,43 @@ def run_case(case, binary):
     return stdout, stderr, code, requests
 
 
-def outcome(case, binary):
+def raw_outcome(case, binary):
     stdout, stderr, code, requests = run_case(case, binary)
+    return {"exit_code": code, "stdout": stdout, "stderr": stderr,
+            "requests": normalize_requests(requests)}
+
+
+def reduce_result(case, raw):
+    """Apply the case's normalization / structural policy to a raw result.
+
+    - nice_time normalization (default): the wall-clock token in the rendered
+      header is nondeterministic, so it is replaced with @NOW.
+    - structural_stdout: for --help, the exact wording is click/clap-specific
+      and non-functional (INV-PARITY), so instead of storing stdout verbatim we
+      record a list of tokens that must appear. Exact wording is a D-1
+      divergence; the *option surface* is the functional contract.
+    """
     norm = case.get("normalize", ["nice_time"])
-    out = normalize(stdout) if "nice_time" in norm else stdout
-    err = normalize(stderr) if "nice_time" in norm else stderr
-    result = {"exit_code": code, "stdout": out, "stderr": err}
+    result = {"exit_code": raw["exit_code"]}
+    if "structural_stdout" in case:
+        result["structural_stdout"] = case["structural_stdout"]
+    else:
+        result["stdout"] = normalize(raw["stdout"]) if "nice_time" in norm \
+            else raw["stdout"]
+    result["stderr"] = normalize(raw["stderr"]) if "nice_time" in norm \
+        else raw["stderr"]
     if case.get("kind") == "mock" and case.get("check_requests", True):
-        result["requests"] = normalize_requests(requests)
+        result["requests"] = raw["requests"]
     return result
+
+
+def outcome(case, binary):
+    return reduce_result(case, raw_outcome(case, binary))
+
+
+def structural_ok(tokens, actual_stdout):
+    missing = [t for t in tokens if t not in actual_stdout]
+    return missing
 
 
 def cmd_capture(cases, oracle):
@@ -259,16 +287,26 @@ def cmd_check(cases, binary):
             failures += 1
             continue
         expected = json.loads(exp_path.read_text(encoding="utf-8"))
-        actual = outcome(case, binary)
+        raw = raw_outcome(case, binary)
+        actual = reduce_result(case, raw)
         diffs = []
         for key in ("exit_code", "stdout", "stderr", "requests"):
             if key in expected or key in actual:
                 if expected.get(key) != actual.get(key):
                     diffs.append(key)
+        # Structural stdout: verify each required token appears in the raw stdout.
+        if "structural_stdout" in expected:
+            missing = structural_ok(expected["structural_stdout"], raw["stdout"])
+            if missing:
+                diffs.append(f"structural missing {missing}")
         if diffs:
             failures += 1
             print(f"FAIL {name}: differs in {', '.join(diffs)}")
             for key in diffs:
+                if key.startswith("structural"):
+                    print(f"  --- actual stdout ---")
+                    print(indent(raw["stdout"]))
+                    continue
                 print(f"  --- expected {key} ---")
                 print(indent(str(expected.get(key))))
                 print(f"  +++ actual {key} +++")

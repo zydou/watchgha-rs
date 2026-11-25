@@ -1,5 +1,15 @@
 {
   "exit_code": 0,
   "stderr": "",
-  "stdout": "Usage: watchgha [OPTIONS] [REPO] [BRANCH]\n\n  Watch GitHub Action runs.\n\n  Repeatedly gets the latest status and redraws the screen, until all of the\n  jobs are complete.\n\n  REPO is a local directory or GitHub URL, defaulting to \".\".\n\n  BRANCH is defaulted from the git repo.\n\nOptions:\n  --sha TEXT                The commit SHA to use. Must be a full SHA.\n  --poll INTEGER            How many seconds between refreshes.  [default: 15]\n  --wait, --wait-for-start  Wait for jobs to start.\n  --only TEXT               Words to limit the workflows shown. Only workflows\n                            with these comma separated case insensitive\n                            substrings in their names will be shown.\n  --message TEXT            A message to display at the top of the screen.\n  --help                    Show this message and exit.\n"
+  "structural_stdout": [
+    "--sha",
+    "--poll",
+    "--wait",
+    "--wait-for-start",
+    "--only",
+    "--message",
+    "--help",
+    "REPO",
+    "BRANCH"
+  ]
 }
