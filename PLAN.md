@@ -1,0 +1,132 @@
+# Port plan: watchgha
+
+## Progress snapshot
+
+- Upstream pin: <https://github.com/nedbat/watchgha.git> @ 34d1a36096a2b6cfd5fe3d3a7d739d7ab1de9343 (2.7.0)
+- Sync target: none
+- Oracle binary: none yet (to be captured in S1)
+- Working end-to-end: none yet (stub prints version)
+- Current stage: S0
+- Next: finish S0 inventory classification, then S1 oracle
+- Blockers: none
+
+## Original overview (from reading upstream @ 34d1a36)
+
+`watchgha` is a Python terminal application that watches GitHub Actions runs on a branch. It resolves a repo (local dir or GitHub URL) + branch into GitHub API URLs, repeatedly fetches workflow runs and their jobs, groups runs into "events", renders a live table (rich), and refreshes until all jobs finish. Entry points: `watchgha.watch_runs:main` (the `watchgha` command) and a deprecated `watch_gha_runs` wrapper.
+
+Original deps → Rust mapping (to finalize in S2/S3):
+
+- `click` (CLI) → `clap`
+- `rich` (rendering, alt-screen, styles) → terminal rendering crate (decide in S2)
+- `httpx` (+`NetRCAuth`) → `reqwest` (+ .netrc handling)
+- `trio` (async + nurseries) → a Rust async runtime (`tokio` or `async-std`) or bounded threads
+- `dulwich` (git config remotes, active branch) → `git2` or shell out to `git`
+- `exceptiongroup` (structured concurrency error handling) → language-level handling
+
+Environment variables the original reads:
+
+- `GITHUB_TOKEN` — bearer auth (else `.netrc` via httpx `NetRCAuth`)
+- `GITHUB_SERVER_URL` (default `https://github.com`) — used to parse remote URLs
+- `GITHUB_API_URL` (default `https://api.github.com`) — base for API calls
+- `SAVE_DATA` — if `1`/truthy int, dump every fetched payload to `get_NNN.<ext>` and index them in `get_index.txt`
+
+## Capability inventory
+
+| ID          | Form | Capability                             | Args/options (type, default, allowed) | I/O & exit codes                                               | Env/config                        | Deps           | Class            | Slice | Notes |
+| ----------- | ---- | -------------------------------------- | ------------------------------------- | -------------------------------------------------------------- | --------------------------------- | -------------- | ---------------- | ----- | ----- |
+| CLI-1       | CLI  | `watchgha` top-level command           | see OPT-* / ARG-* rows                | stdout render, stderr errors, exit 0/1/2                       | —                                 | clap           | direct match     | S2    | Docstring becomes help; rewrite in own words |
+| OPT-SHA     | CLI  | `--sha`                                | string, no default, full SHA          | —                                                              | —                                 | clap           | direct match     | S2    | Passed as `head_sha` param |
+| OPT-POLL    | CLI  | `--poll`                               | int, default 15                       | seconds between refreshes                                      | —                                 | clap           | direct match     | S2    | `show_default` in help |
+| OPT-WAIT    | CLI  | `--wait` / `--wait-for-start`          | flag, false                           | wait for jobs to start before live view                        | —                                 | clap           | direct match     | S2    | Two spellings, one flag |
+| OPT-ONLY    | CLI  | `--only`                               | string, no default                    | comma-separated case-insensitive substrings filter on run name | —                                 | clap           | direct match     | S3    | Split on `,`, trim whitespace |
+| OPT-MESSAGE | CLI  | `--message`                            | string, no default                    | line shown at top of output                                    | —                                 | clap           | direct match     | S3    | Prepended to render |
+| ARG-REPO    | CLI  | `REPO` positional                      | string, default `.`                   | local dir or GitHub URL                                        | —                                 | clap           | direct match     | S2    | Dispatch: isdir vs contains `:` |
+| ARG-BRANCH  | CLI  | `BRANCH` positional                    | string, optional                      | defaults from git                                              | —                                 | clap           | direct match     | S2    |       |
+| HELP-1      | CLI  | `--help`                               | flag                                  | stdout, exit 0                                                 | —                                 | clap           | known divergence | S2    | Wording is ours; structure mirrors click |
+| URL-1       | CLI  | Resolve local dir → remote URLs        | REPO isdir                            | list of remote URLs                                            | —                                 | git            | direct match     | S2    | git_help.git_repo_urls |
+| URL-2       | CLI  | Resolve URL repo                       | REPO contains `:`                     | single URL                                                     | —                                 | —              | direct match     | S2    | branch required else fatal |
+| URL-3       | CLI  | Branch defaulting from git             | —                                     | current branch name                                            | —                                 | git            | direct match     | S2    | git_help.git_branch |
+| URL-4       | CLI  | Build API URL from remote              | per_page=100, branch\|head_sha        | `…/actions/runs?…`                                             | GITHUB_SERVER_URL, GITHUB_API_URL | —              | direct match     | S2    | Regex over https/git@/enterprise forms; urlencode params |
+| URL-5       | CLI  | Fatal: branch required for URL repo    | —                                     | stderr msg, exit 1                                             | —                                 | —              | direct match     | S2    |       |
+| URL-6       | CLI  | Fatal: unrecognized repo               | —                                     | stderr msg, exit 1                                             | —                                 | —              | direct match     | S2    | `Don't understand repo {repo!r}` |
+| URL-7       | CLI  | Fatal: no GitHub repo found            | —                                     | stderr msg, exit 1                                             | —                                 | —              | direct match     | S3    | Lists the remote URLs |
+| GIT-1       | CLI  | Read git remote URLs                   | dir                                   | yields `remote.*.url`                                          | .git/config                       | git lib        | direct match     | S2    | dulwich → git2/git |
+| GIT-2       | CLI  | Read active branch                     | dir                                   | branch name                                                    | HEAD                              | git lib        | direct match     | S2    |       |
+| HTTP-1      | CLI  | Fetch URL with auth                    | —                                     | response text                                                  | GITHUB_TOKEN                      | reqwest        | direct match     | S3    | Bearer token if set |
+| HTTP-2      | CLI  | `.netrc` auth fallback                 | —                                     | —                                                              | ~/.netrc                          | reqwest/.netrc | known divergence | S3    | httpx NetRCAuth; decide Rust approach |
+| HTTP-3      | CLI  | Retry on 502 + outer retry             | —                                     | —                                                              | —                                 | —              | direct match     | S3    | Inner 3 tries on 502, outer 3 tries any error; backoff 0.05*2^n |
+| HTTP-4      | CLI  | SAVE_DATA dump                         | —                                     | get_NNN.ext + get_index.txt                                    | SAVE_DATA                         | —              | direct match     | S3    | ext from content-type |
+| HTTP-5      | CLI  | Error message w/ JSON body             | —                                     | WatchGhaError text                                             | —                                 | —              | direct match     | S3    | Appends `label: text` lines or raw text |
+| DATA-1      | CLI  | Fetch runs from all URLs concurrently  | urls                                  | workflow_runs list                                             | —                                 | async          | direct match     | S3    | trio nursery → Rust concurrency |
+| DATA-2      | CLI  | Dedupe runs by id                      | —                                     | —                                                              | —                                 | —              | direct match     | S3    | Duplicate remotes |
+| DATA-3      | CLI  | Sort runs                              | run_sort_key                          | —                                                              | —                                 | —              | direct match     | S3    | (defuzz(started_dt), head_sha, event, name) reverse |
+| DATA-4      | CLI  | Group runs into events                 | run_group_key                         | —                                                              | —                                 | —              | direct match     | S3    | (defuzz(started_dt), head_sha, event) |
+| DATA-5      | CLI  | Exclude `.github/` run names           | —                                     | —                                                              | —                                 | —              | direct match     | S3    | Bad yml parse names |
+| DATA-6      | CLI  | Drop events older than 7 days          | —                                     | —                                                              | now (UTC)                         | —              | direct match     | S3    | days_old > 7 |
+| DATA-7      | CLI  | `--only` filter                        | only_words                            | —                                                              | —                                 | —              | direct match     | S3    | substring in lowercased name |
+| DATA-8      | CLI  | Fetch jobs per run                     | jobs_url                              | sorted jobs                                                    | —                                 | async          | direct match     | S3    | `?per_page=100`, job_sort_key |
+| DATA-9      | CLI  | Status totals                          | —                                     | done/succeeded/total/num_succeeded/num_failed                  | —                                 | —              | direct match     | S3    | CONCLUSION_BAD → failed |
+| RENDER-1    | CLI  | Event header line                      | —                                     | display_title head_branch [event] sha@time                     | —                                 | term           | direct match     | S3    | sha `.12`, nice_time |
+| RENDER-2    | CLI  | Run line                               | —                                     | icon summary name view <id>                                    | —                                 | term           | direct match     | S3    | CSTYLES/CICONS; hyperlink |
+| RENDER-3    | CLI  | Job lines + stepdots                   | —                                     | name icon stepdots current_step                                | —                                 | term           | direct match     | S3    | Step state machine (failure/in_progress/last/skipped) |
+| RENDER-4    | CLI  | Control-char scrub                     | —                                     | strip `[\x00-\x1f\x7f-\x9f]`                                   | —                                 | —              | direct match     | S3    | Applied to every output line |
+| TIME-1      | CLI  | nice_time                              | datetime                              | localized `%I:%M%p` / `%m-%d` / `%Y-%m-%d`                     | local tz                          | chrono         | direct match     | S3    | astimezone local; lowercased |
+| TIME-2      | CLI  | to_datetime                            | ISO string                            | datetime                                                       | —                                 | chrono         | direct match     | S3    | Replace `Z`→`+00:00` |
+| TIME-3      | CLI  | human_key                              | string                                | natural sort key                                               | —                                 | —              | direct match     | S3    | Split on `\d+`, tryint, casefold |
+| TIME-4      | CLI  | DatetimeBucketer.defuzz                | window=5                              | canonical instant                                              | —                                 | —              | direct match     | S3    | rounds map, 2 roundings |
+| LOOP-1      | CLI  | Watch loop                             | poll, wait                            | redraw until done                                              | —                                 | term           | direct match     | S3    | Interval accounts for work time |
+| LOOP-2      | CLI  | wait-for-start behavior                | —                                     | exit live view once started                                    | —                                 | —              | direct match     | S3    | Break when not done pre-start |
+| LOOP-3      | CLI  | Alt-screen + SIGWINCH redraw           | —                                     | —                                                              | —                                 | term           | direct match     | S3    | Windows: no SIGWINCH (swallow) |
+| LOOP-4      | CLI  | OSC 9;4 terminal progress              | —                                     | `\033]9;4;st;pr\033\\`                                         | —                                 | —              | direct match     | S3    | state 1/2, percent |
+| LOOP-5      | CLI  | Exit codes                             | —                                     | 0 success, 1 fail/error, 2 interrupted                         | —                                 | —              | direct match     | S3    | fatal default 1 |
+| LOOP-6      | CLI  | Ctrl-C handling                        | —                                     | prints final, exit 2                                           | —                                 | —              | direct match     | S3    | interrupted flag |
+| DEP-1       | CLI  | Deprecated `watch_gha_runs`            | same as main                          | warning + delay + run main                                     | —                                 | clap           | known divergence | S3    | Delay = 1+(days since 2026-01-18)/365*9 |
+| DEMO-1      | lib  | `python -m watchgha.demo` styling demo | —                                     | renders sample data                                            | —                                 | term           | not portable     | —     | Dev-only styling preview; see N-1 |
+
+## Registers
+
+### Divergences (D-###)
+
+| ID  | Capability | Scenario                      | Original behavior                     | Rust behavior                                            | Rationale                                                                | Parity case |
+| --- | ---------- | ----------------------------- | ------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------ | ----------- |
+| D-1 | HELP-1     | `watchgha --help`             | click-generated help text             | clap-generated help; same options/structure, our wording | Help text is not functional (INV-PARITY); wording is rewritten per guide | parity: options present, exit 0 |
+| D-2 | HTTP-2     | Private repo, no GITHUB_TOKEN | httpx `NetRCAuth` reads `~/.netrc`    | TBD in S3 (reqwest + .netrc crate or manual parse)       | Must preserve `.netrc` auth or register non-portable                     | parity: auth header from .netrc |
+| D-3 | DEP-1      | `watch_gha_runs` invoked      | Deprecated warning + sleep + delegate | Reimplement command + warning + delay                    | Backward-compat entry point is in scope (a CLI)                          | parity: warning then normal run |
+
+### Bugs fixed (B-###)
+
+| ID         | Capability | Defect | Fix | Evidence | Parity case |
+| ---------- | ---------- | ------ | --- | -------- | ----------- |
+| (none yet) |            |        |     |          |             |
+
+### Non-portable (N-###)
+
+| ID  | Capability             | Original behavior                                 | Why not portable                                                                                    | Mitigation |
+| --- | ---------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ---------- |
+| N-1 | DEMO-1 `watchgha.demo` | `python -m watchgha.demo` prints a styling sample | It is a dev-only styling preview module, not part of the shipped CLI contract; a Python-only helper | Omit; the same rendering is exercised via RENDER-* slices and the parity harness |
+
+## Phases
+
+- [ ] Phase 0: Recon
+  - [x] Commit starting scaffold (cargo check, Cargo.lock)
+  - [x] Pin upstream @ 34d1a36, adopt Apache-2.0 license
+  - [ ] Full inventory classified (this table) — confirm every row has class + slice
+  - [ ] Push main, install rulesets
+- [ ] Phase 1: Oracle
+  - [ ] Build `tests/parity/` harness (capture/check/normalize)
+  - [ ] Capture from original v2.7.0 binary; record provenance
+  - [ ] Self-check green against original
+- [ ] Phase 2: Skeleton
+  - [ ] CLI skeleton (clap), error/exit model, config/env loading
+  - [ ] One self-contained slice end to end
+  - [ ] CI green: G-FMT/G-LINT/G-TEST/G-PARITY
+- [ ] Phase 3: Slices (bottom-up)
+  - [ ] TIME-* pure helpers
+  - [ ] URL-* / GIT-* repo+branch resolution
+  - [ ] HTTP-* fetching
+  - [ ] DATA-* aggregation
+  - [ ] RENDER-* display
+  - [ ] LOOP-* watch loop + exit codes
+- [ ] Phase 4: Harden
+- [ ] Phase 5: Review
+- [ ] Phase 6: Ship
