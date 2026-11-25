@@ -196,18 +196,11 @@ fn get_once(url: &str, save: bool) -> Result<String, WatchGhaError> {
     }
     let resp = req
         .send()
-        .map_err(|e| http_error(url, None, e.to_string()))?;
+        .map_err(|e| http_error(url, None, e.to_string(), None))?;
 
     let status = resp.status();
     let ok = status.is_success();
     let code = status.as_u16();
-    if RETRY_STATUS_CODES.contains(&code) {
-        // The inner 502 retry is folded into the outer retry here; surface a
-        // retryable error so get_data's backoff loop handles it.
-        return Err(WatchGhaError(format!(
-            "Server error '{code}' for url {url:?}"
-        )));
-    }
 
     let content_type = resp
         .headers()
@@ -217,10 +210,27 @@ fn get_once(url: &str, save: bool) -> Result<String, WatchGhaError> {
         .to_string();
     let text = resp
         .text()
-        .map_err(|e| http_error(url, Some(code), e.to_string()))?;
+        .map_err(|e| http_error(url, Some(code), e.to_string(), None))?;
+
+    if RETRY_STATUS_CODES.contains(&code) {
+        // The inner 502 retry is folded into the outer retry here; surface a
+        // retryable error (with the body, as raise_for_status would) so
+        // get_data's backoff loop handles it.
+        return Err(http_error(
+            url,
+            Some(code),
+            format!("Server error '{code}'"),
+            Some(&text),
+        ));
+    }
 
     if !ok {
-        return Err(http_error(url, Some(code), format!("status {code}")));
+        return Err(http_error(
+            url,
+            Some(code),
+            format!("status {code}"),
+            Some(&text),
+        ));
     }
 
     if save {
@@ -230,8 +240,10 @@ fn get_once(url: &str, save: bool) -> Result<String, WatchGhaError> {
 }
 
 /// Build a `WatchGhaError` for a failed fetch, mirroring the original's
-/// message shape (include the URL when the underlying error omits it).
-fn http_error(url: &str, status: Option<u16>, detail: String) -> WatchGhaError {
+/// message shape: include the URL when the underlying error omits it, then
+/// append the response body — each `label: text` field when the body is JSON,
+/// else the raw body (matching upstream's post-`raise_for_status` handling).
+fn http_error(url: &str, status: Option<u16>, detail: String, body: Option<&str>) -> WatchGhaError {
     let mut msg = if url.len() > 10 && detail.contains(url) {
         detail
     } else {
@@ -240,7 +252,30 @@ fn http_error(url: &str, status: Option<u16>, detail: String) -> WatchGhaError {
     if let Some(code) = status {
         msg.push_str(&format!("\nstatus: {code}"));
     }
+    if let Some(body) = body {
+        match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(body) {
+            Ok(fields) => {
+                for (label, text) in &fields {
+                    let key = serde_json::Value::String(label.clone());
+                    msg.push_str(&format!("\n{}: {}", py_str(&key), py_str(text)));
+                }
+            }
+            Err(_) => msg.push_str(&format!("\n{body}")),
+        }
+    }
     WatchGhaError(msg)
+}
+
+/// Format a JSON value the way Python's `str()` renders it when the original
+/// does `f"\n{label}: {text}"` over `resp.json().items()`: strings without
+/// quotes, booleans lowercase, null as `None`, numbers plainly.
+fn py_str(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Null => "None".to_string(),
+        other => other.to_string(),
+    }
 }
 
 static SAVE_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -408,5 +443,39 @@ mod tests {
             2,
             "retries once then succeeds"
         );
+    }
+
+    #[test]
+    fn http_error_appends_json_body_fields() {
+        // Mirrors upstream: a JSON body becomes one "label: text" line per field.
+        let e = http_error(
+            "https://api.github.com/repos/o/r/actions/runs",
+            Some(404),
+            "status 404".into(),
+            Some(r#"{"message":"Not Found","documentation_url":"https://docs"}"#),
+        );
+        let msg = e.0;
+        assert!(msg.contains("\nstatus: 404"));
+        assert!(msg.contains("\nmessage: Not Found"));
+        assert!(msg.contains("\ndocumentation_url: https://docs"));
+    }
+
+    #[test]
+    fn http_error_appends_raw_body_when_not_json() {
+        let e = http_error(
+            "https://api.github.com/x",
+            Some(500),
+            "status 500".into(),
+            Some("gateway exploded"),
+        );
+        assert!(e.0.ends_with("\ngateway exploded"));
+    }
+
+    #[test]
+    fn http_error_keeps_detail_that_already_has_url() {
+        // When the detail already contains the (long) URL, don't prepend it again.
+        let url = "https://api.github.com/repos/o/r/actions/runs";
+        let e = http_error(url, None, format!(" Couldn't get {url:?}: timeout"), None);
+        assert_eq!(e.0.matches(url).count(), 1, "URL appears once");
     }
 }
