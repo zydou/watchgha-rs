@@ -62,6 +62,53 @@ def normalize(text: str) -> str:
     return NICE_TIME_RE.sub("@NOW", text)
 
 
+# The mock server binds an ephemeral port, so its host:port differs on every
+# run; normalize it so SAVE_DATA dumps compare across capture and check.
+MOCK_HOST_RE = re.compile(r"127\.0\.0\.1:\d+")
+# Payload timestamps (run_started_at / created_at / ...) are resolved by the
+# mock as now-offsets at request time, so they are nondeterministic.
+ISO_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def normalize_file_text(text: str) -> str:
+    """Normalize the nondeterministic parts of a SAVE_DATA dump: the mock's
+    ephemeral port, ISO-8601 timestamps, and nice_time tokens."""
+    text = MOCK_HOST_RE.sub("127.0.0.1:PORT", text)
+    text = ISO_TS_RE.sub("TIMESTAMP", text)
+    return normalize(text)
+
+
+# Every SAVE_DATA dump carries this header, written once at startup (B-3).
+SAVE_INDEX_HEADER = "# URLs fetched:"
+
+
+def canonical_files(files: dict) -> dict:
+    """Reduce dumped SAVE_DATA files to an order-independent, normalized form.
+
+    The original fetches each run's jobs concurrently, so which job lands in
+    get_001 vs get_002 is nondeterministic. Compare the *set* of fetched URLs
+    and the *set* of payloads rather than their incidental numbering:
+      - header: the get_index.txt header line (absent when the header was not
+        written — the B-3 contract);
+      - urls: the set of URLs the index records (get_NNN prefixes stripped);
+      - payloads: the sorted multiset of dumped file contents.
+    """
+    index = files.get("get_index.txt")
+    header = None
+    urls = []
+    if index is not None:
+        lines = [ln for ln in index.splitlines() if ln.strip()]
+        if lines and lines[0].strip() == SAVE_INDEX_HEADER:
+            header = SAVE_INDEX_HEADER
+            lines = lines[1:]
+        urls = sorted(ln.split(":", 1)[1].strip() for ln in lines)
+    payloads = sorted(
+        normalize_file_text(v) for k, v in files.items()
+        if k != "get_index.txt"
+    )
+    return {"header": header, "urls": urls, "payloads": payloads}
+
+
 def normalize_requests(reqs):
     """Sort requests so comparison is order-independent.
 
@@ -223,14 +270,16 @@ def run_case(case, binary):
                 requests = captured_requests
 
         # SAVE_DATA cases: capture every file the run dumped into its cwd, with
-        # the payload contents normalized for the now-offset timestamps the mock
-        # resolves at request time. The index lines are deterministic (fixed
-        # URLs), so they compare byte-for-byte.
+        # the nondeterministic parts (mock port, now-offset timestamps)
+        # normalized. canonical_files() then reduces them to an
+        # order-independent form for comparison.
         files = {}
         if case.get("save_data"):
             for p in sorted(cwd.rglob("*")):
                 if p.is_file() and (p.name.startswith("get_") or p.name == "get_index.txt"):
-                    files[str(p.relative_to(cwd))] = normalize(p.read_text(encoding="utf-8"))
+                    files[str(p.relative_to(cwd))] = normalize_file_text(
+                        p.read_text(encoding="utf-8")
+                    )
 
     if requests is None:
         requests = []
@@ -265,7 +314,7 @@ def reduce_result(case, raw):
     if case.get("kind") == "mock" and case.get("check_requests", True):
         result["requests"] = raw["requests"]
     if case.get("save_data"):
-        result["files"] = raw["files"]
+        result["files"] = canonical_files(raw["files"])
     return result
 
 
@@ -304,7 +353,7 @@ def cmd_check(cases, binary):
         raw = raw_outcome(case, binary)
         actual = reduce_result(case, raw)
         diffs = []
-        for key in ("exit_code", "stdout", "stderr", "requests"):
+        for key in ("exit_code", "stdout", "stderr", "requests", "files"):
             if key in expected or key in actual:
                 if expected.get(key) != actual.get(key):
                     diffs.append(key)
@@ -371,7 +420,8 @@ def main(argv=None):
             name = case["name"]
             first = outcome(case, args.oracle)
             second = outcome(case, args.oracle)
-            diffs = [k for k in ("exit_code", "stdout", "stderr", "requests")
+            diffs = [k for k in ("exit_code", "stdout", "stderr", "requests",
+                                 "files")
                      if first.get(k) != second.get(k)]
             if diffs:
                 failures += 1

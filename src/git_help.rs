@@ -57,7 +57,11 @@ pub fn git_repo_urls(dir: &Path) -> Result<Vec<String>, WatchGhaError> {
 /// Get the current git branch name for the repo at `dir`.
 ///
 /// Mirrors `git_help.git_branch` (dulwich `active_branch`): read `HEAD` and
-/// return the branch name after `refs: refs/heads/`.
+/// return the branch name after `refs: refs/heads/`. On a detached HEAD
+/// (`HEAD` holds a raw object id, not `ref: refs/heads/...`) dulwich's
+/// `active_branch` raises `ValueError`, which the original surfaces as a fatal
+/// exit 1; we return `Err` so the caller (`gha_urls`) does the same rather than
+/// silently watching the wrong thing.
 pub fn git_branch(dir: &Path) -> Result<String, WatchGhaError> {
     let gitdir = discover_gitdir(dir)
         .ok_or_else(|| WatchGhaError(format!("No git repository found at {}", dir.display())))?;
@@ -70,8 +74,12 @@ pub fn git_branch(dir: &Path) -> Result<String, WatchGhaError> {
         let name = r#ref.strip_prefix("refs/heads/").unwrap_or(r#ref);
         Ok(name.to_string())
     } else {
-        // Detached HEAD: HEAD holds a raw object id.
-        Ok(line.to_string())
+        // Detached HEAD: dulwich active_branch raises ValueError here.
+        Err(WatchGhaError(format!(
+            "Repository at {} is in detached HEAD state; couldn't determine branch \
+             (pass a BRANCH or --sha)",
+            dir.display()
+        )))
     }
 }
 
@@ -167,6 +175,19 @@ mod tests {
         std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/feature/x\n").unwrap();
         let b = git_branch(&tmp).unwrap();
         assert_eq!(b, "feature/x");
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn git_branch_detached_head_is_err() {
+        // Mirrors dulwich active_branch raising ValueError on a detached HEAD:
+        // the caller turns this into a fatal exit 1 (not a silent raw-SHA branch).
+        let tmp = std::env::temp_dir().join("watchgha-test-detached");
+        let gitdir = tmp.join(".git");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        let sha = format!("{}\n", "a".repeat(40));
+        std::fs::write(gitdir.join("HEAD"), &sha).unwrap();
+        assert!(git_branch(&tmp).is_err(), "detached HEAD must be an error");
         std::fs::remove_dir_all(&tmp).ok();
     }
 }
