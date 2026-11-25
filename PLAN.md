@@ -6,7 +6,7 @@
 - Sync target: none
 - Oracle binary: `.oracle-venv/bin/watchgha` (watchgha 2.7.0, built from `upstream/` @ 34d1a36 via `uv pip install ./upstream`, Python 3.13.18)
 - Working end-to-end: CLI skeleton + URL/GIT resolution + HTTP fetch + DATA aggregation + RENDER (plain) + watch LOOP (incl. Ctrl-C→exit 2 and TTY alt-screen/SIGWINCH redraw) + deprecated `watch_gha_runs` entry point; 12/12 parity cases green
-- Current stage: S4
+- Current stage: S6
 - Next: S4 Harden — fixed `.netrc` contract (B-1: `NETRC` env + `default` fallback); remaining edge matrix (SAVE_DATA dump, retry timing, large/binary input, concurrent invocation)
 - Blockers: none
 - CI: all required targets green on `main`; nightly publishes on push (Release run green post PR #2)
@@ -151,5 +151,8 @@ Environment variables the original reads:
   - [x] retry timing / 502 path unit evidence (HTTP-3/D-5): retry loop extracted to injectable `retry_times`, attempt count unit-tested
   - [x] DATA-* aggregation core unit tests (dedupe, group, `.github` drop, `--only`, 7-day, status totals) — data.rs previously had zero tests
   - [ ] remaining edge matrix: large/binary input, malformed config, env combinations, concurrent invocation
-- [ ] Phase 5: Review
+- [x] Phase 5: Review
+  - [x] Adversarial inventory audit (read-only subagent): all 46 rows implemented; flagged 2 unregistered divergences (→ D-5 HTTP-3 retry fold, D-6 DATA-1 sequential fetch) and the DATA-aggregation test gap (→ 7 new unit tests)
+  - [x] Findings fixed and registered (D-5, D-6, B-2 HTTP-5 error-body shape); every capability row now implemented + tested
 - [ ] Phase 6: Ship
+  - [x] README.md (own words): what the port is, tracked upstream commit, install per platform, usage, env, known divergences, license
