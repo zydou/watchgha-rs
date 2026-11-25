@@ -1,7 +1,7 @@
 [package]
 description = "A Rust reimplementation of the watchgha."
 edition = "2024"
-license-file = "LICENSE"
+license-file = "LICENSE.txt"
 name = "watchgha"
 repository = "https://github.com/zydou/watchgha-rs"
 version = "2.7.0"
