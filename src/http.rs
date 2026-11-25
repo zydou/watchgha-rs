@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use crate::error::WatchGhaError;
+use crate::error::{WatchGhaError, fatal};
 
 /// Status codes the inner fetch retries on (mirrors `RETRY_STATUS_CODES`).
 const RETRY_STATUS_CODES: [u16; 1] = [502];
@@ -241,20 +241,22 @@ fn get_once(url: &str, save: bool) -> Result<String, WatchGhaError> {
 
 /// Build a `WatchGhaError` for a failed fetch, mirroring the original's
 /// message shape: include the URL when the underlying error omits it, then
-/// append the response body — each `label: text` field when the body is JSON,
-/// else the raw body (matching upstream's post-`raise_for_status` handling).
+/// append the response body — each `label: text` field in document order when
+/// the body is JSON, else the raw body (matching upstream's post-`raise_for_status`
+/// handling). The original adds no status line of its own; the status is only
+/// present if the JSON body carries a `status` field, so we don't add one either.
 fn http_error(url: &str, status: Option<u16>, detail: String, body: Option<&str>) -> WatchGhaError {
+    let _ = status; // status is not appended (see doc); kept for signature parity
     let mut msg = if url.len() > 10 && detail.contains(url) {
         detail
     } else {
         format!("Couldn't get {url:?}: {detail}")
     };
-    if let Some(code) = status {
-        msg.push_str(&format!("\nstatus: {code}"));
-    }
     if let Some(body) = body {
         match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(body) {
             Ok(fields) => {
+                // `preserve_order` makes this Map insertion-ordered, matching
+                // Python's dict iteration order in `resp.json().items()`.
                 for (label, text) in &fields {
                     let key = serde_json::Value::String(label.clone());
                     msg.push_str(&format!("\n{}: {}", py_str(&key), py_str(text)));
@@ -280,8 +282,38 @@ fn py_str(v: &serde_json::Value) -> String {
 
 static SAVE_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// One-time SAVE_DATA startup, mirroring `Http.__init__` (which runs at import
+/// in the original, before any fetch): parse the flag as an int (a non-integer
+/// is fatal, as Python's `int()` raising ValueError), and when saving is enabled
+/// truncate `get_index.txt` and write the `# URLs fetched:` header so the index
+/// exists — even if every subsequent fetch fails. Call once at process start.
+pub fn save_data_init() {
+    let Ok(value) = std::env::var("SAVE_DATA") else {
+        return; // unset -> default "0" -> disabled
+    };
+    let enabled = parse_save_flag(&value).unwrap_or_else(|()| {
+        fatal(
+            format!("invalid literal for int() with base 10: '{value}'"),
+            1,
+        )
+    });
+    if enabled {
+        let _ = std::fs::write("get_index.txt", "# URLs fetched:\n");
+        SAVE_COUNT.store(0, Ordering::SeqCst);
+    }
+}
+
+/// `bool(int(value))` for the SAVE_DATA flag: any nonzero integer enables
+/// saving (`"2"`, `"-1"`, `"007"`); `Err(())` when Python's `int()` would raise
+/// ValueError (empty, non-numeric, a float like `"2.0"`).
+fn parse_save_flag(value: &str) -> Result<bool, ()> {
+    // Python's int() strips surrounding whitespace before parsing.
+    value.trim().parse::<i64>().map(|n| n != 0).map_err(|_| ())
+}
+
 /// Dump a fetched payload to `get_NNN.<ext>` and index it in `get_index.txt`
-/// (SAVE_DATA=1 debug aid, mirroring `Http.get_data`).
+/// (SAVE_DATA debug aid, mirroring `Http.get_data`). The index is truncated and
+/// given its header by [`save_data_init`]; each fetch appends one line here.
 fn save_payload(url: &str, text: &str, content_type: &str) {
     let n = SAVE_COUNT.fetch_add(1, Ordering::SeqCst);
     let ext = extension_for_content(content_type);
@@ -446,18 +478,27 @@ mod tests {
     }
 
     #[test]
-    fn http_error_appends_json_body_fields() {
-        // Mirrors upstream: a JSON body becomes one "label: text" line per field.
+    fn http_error_appends_json_body_fields_in_document_order() {
+        // Mirrors upstream: a JSON body becomes one "label: text" line per field,
+        // in the body's document order (Python's insertion-ordered dict), with
+        // string values unquoted, and no status line of its own.
         let e = http_error(
             "https://api.github.com/repos/o/r/actions/runs",
             Some(404),
             "status 404".into(),
-            Some(r#"{"message":"Not Found","documentation_url":"https://docs"}"#),
+            Some(r#"{"zebra":"zz","apple":"aa","count":3,"flag":true,"nothing":null}"#),
         );
         let msg = e.0;
-        assert!(msg.contains("\nstatus: 404"));
-        assert!(msg.contains("\nmessage: Not Found"));
-        assert!(msg.contains("\ndocumentation_url: https://docs"));
+        // Document order, not sorted.
+        let zebra = msg.find("\nzebra: zz").expect("zebra line");
+        let apple = msg.find("\napple: aa").expect("apple line");
+        assert!(zebra < apple, "fields keep body order (zebra before apple)");
+        // Python str() rendering: strings unquoted, numbers/bools/null plain.
+        assert!(msg.contains("\ncount: 3"));
+        assert!(msg.contains("\nflag: true"));
+        assert!(msg.contains("\nnothing: None"));
+        // No added status line: the only "status:" would come from the body.
+        assert!(!msg.contains("\nstatus: 404"), "port adds no status line");
     }
 
     #[test]
@@ -477,5 +518,18 @@ mod tests {
         let url = "https://api.github.com/repos/o/r/actions/runs";
         let e = http_error(url, None, format!(" Couldn't get {url:?}: timeout"), None);
         assert_eq!(e.0.matches(url).count(), 1, "URL appears once");
+    }
+
+    #[test]
+    fn save_flag_is_python_int_truthiness() {
+        // Mirrors bool(int(value)): any nonzero int enables; a non-int is Err.
+        for on in ["1", "2", "-1", "007", " 3 "] {
+            assert_eq!(parse_save_flag(on), Ok(true), "{on:?} enables");
+        }
+        assert_eq!(parse_save_flag("0"), Ok(false));
+        assert_eq!(parse_save_flag(" 0 "), Ok(false));
+        for bad in ["", "abc", "2.0", "1e3", "0x1"] {
+            assert_eq!(parse_save_flag(bad), Err(()), "{bad:?} is a ValueError");
+        }
     }
 }

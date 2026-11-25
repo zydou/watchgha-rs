@@ -41,5 +41,9 @@ rustls = { version = "0.23", default-features = false, features = [
   "std",
   "tls12",
 ] }
-serde_json = "1.0.154"
+# `preserve_order` makes `serde_json::Map` insertion-ordered (IndexMap-backed),
+# matching Python's insertion-ordered dict: the original iterates
+# `resp.json().items()` and emits error-body fields in document order, so the
+# port must not sort them (see PLAN.md B-2).
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 url = "2.5.9"

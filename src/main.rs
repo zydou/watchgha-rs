@@ -20,13 +20,19 @@ use clap::Parser;
 use crate::cli::Cli;
 use crate::data::{Status, draw_runs};
 use crate::error::{EXIT_FAILURE, EXIT_INTERRUPTED, EXIT_OK, fatal};
-use crate::http::get_data;
+use crate::http::{get_data, save_data_init};
 
 /// Set by the Ctrl-C (SIGINT) handler; checked between poll iterations so the
 /// watch loop can stop, print the final frame, and exit 2 (LOOP-6).
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
 fn main() {
+    // The original instantiates its Http helper at import time (before any
+    // entry-point logic), which — when SAVE_DATA is set — truncates
+    // get_index.txt and writes its header, and fatals on a non-integer
+    // SAVE_DATA. Do the same one-time init first (SAVE_DATA).
+    save_data_init();
+
     // The project ships two console scripts from one binary: `watchgha` (the
     // real command) and the deprecated `watch_gha_runs`. They share this
     // executable and are distinguished by their invoked name (argv[0]
@@ -207,10 +213,7 @@ impl GhaWatcher {
         osc_9_4(0, 0);
         // `_alt` drops here, restoring the main screen before the final frame
         // is printed below it (mirroring the original leaving `console.screen()`
-        // then `console.print(output)`).
-        if is_tty {
-            println!();
-        }
+        // then `console.print(output, end="")` — no leading blank line).
         print!("{output}");
         let _ = std::io::stdout().flush();
         if INTERRUPTED.load(Ordering::SeqCst) {
