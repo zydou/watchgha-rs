@@ -5,9 +5,9 @@
 - Upstream pin: <https://github.com/nedbat/watchgha.git> @ 34d1a36096a2b6cfd5fe3d3a7d739d7ab1de9343 (2.7.0)
 - Sync target: none
 - Oracle binary: `.oracle-venv/bin/watchgha` (watchgha 2.7.0, built from `upstream/` @ 34d1a36 via `uv pip install ./upstream`, Python 3.13.18)
-- Working end-to-end: CLI skeleton + URL/GIT resolution + HTTP fetch + DATA aggregation + RENDER (plain) + watch LOOP (incl. Ctrl-C→exit 2) + deprecated `watch_gha_runs` entry point; 7/7 parity cases green
+- Working end-to-end: CLI skeleton + URL/GIT resolution + HTTP fetch + DATA aggregation + RENDER (plain) + watch LOOP (incl. Ctrl-C→exit 2 and TTY alt-screen/SIGWINCH redraw) + deprecated `watch_gha_runs` entry point; 7/7 parity cases green
 - Current stage: S3
-- Next: S3 slices — remaining LOOP (TTY alt-screen live redraw + SIGWINCH, LOOP-3); D-2 `.netrc` auth register update
+- Next: S3 slices — remaining: DATA/RENDER/URL/TIME/HTTP slice ledger ticks and Phase 3 wrap-up (LOOP-* and DEP-1 now done)
 - Blockers: none
 - CI: all required targets green on `main`; nightly publishes on push (Release run green post PR #2)
 
@@ -139,7 +139,7 @@ Environment variables the original reads:
   - [ ] RENDER-* display
   - [ ] LOOP-* watch loop + exit codes
     - [x] LOOP-6 Ctrl-C → stop after final frame, exit 2 (functional: mock in-progress run, SIGINT → exit 2 + `** interrupted **` on stderr)
-    - [ ] LOOP-3 TTY alt-screen live redraw + SIGWINCH (render_progress currently a stub; non-TTY path is the parity-exercised one)
+    - [x] LOOP-3 TTY alt-screen live redraw + SIGWINCH (libc SIGWINCH→RESIZED flag; alt-screen via `\x1b[?1049h/l` with a Drop guard restoring the main screen; Windows swallows SIGWINCH via `cfg(unix)`). Functional pty check: enter/leave each ×1, 6 redraws (initial + poll + SIGWINCH), interrupted→exit 2, OSC reset.
 - [ ] Phase 4: Harden
 - [ ] Phase 5: Review
 - [ ] Phase 6: Ship
