@@ -136,5 +136,15 @@
    "--only",
    "zzz"
   ]
+ },
+ {
+  "name": "mock_completed_save_data",
+  "kind": "mock",
+  "spec": "completed",
+  "save_data": true,
+  "local_repo": {
+   "remote": "https://github.com/owner/repo.git",
+   "branch": "main"
+  }
  }
 ]

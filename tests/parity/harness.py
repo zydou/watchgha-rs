@@ -176,6 +176,8 @@ def run_case(case, binary):
         (tmp / "home").mkdir()
         env.pop("GITHUB_API_URL", None)
         env.pop("GITHUB_SERVER_URL", None)
+        if case.get("save_data"):
+            env["SAVE_DATA"] = "1"
 
         server = None
         requests = []
@@ -220,15 +222,25 @@ def run_case(case, binary):
                 server.stop()
                 requests = captured_requests
 
+        # SAVE_DATA cases: capture every file the run dumped into its cwd, with
+        # the payload contents normalized for the now-offset timestamps the mock
+        # resolves at request time. The index lines are deterministic (fixed
+        # URLs), so they compare byte-for-byte.
+        files = {}
+        if case.get("save_data"):
+            for p in sorted(cwd.rglob("*")):
+                if p.is_file() and (p.name.startswith("get_") or p.name == "get_index.txt"):
+                    files[str(p.relative_to(cwd))] = normalize(p.read_text(encoding="utf-8"))
+
     if requests is None:
         requests = []
-    return stdout, stderr, code, requests
+    return stdout, stderr, code, requests, files
 
 
 def raw_outcome(case, binary):
-    stdout, stderr, code, requests = run_case(case, binary)
+    stdout, stderr, code, requests, files = run_case(case, binary)
     return {"exit_code": code, "stdout": stdout, "stderr": stderr,
-            "requests": normalize_requests(requests)}
+            "requests": normalize_requests(requests), "files": files}
 
 
 def reduce_result(case, raw):
@@ -252,6 +264,8 @@ def reduce_result(case, raw):
         else raw["stderr"]
     if case.get("kind") == "mock" and case.get("check_requests", True):
         result["requests"] = raw["requests"]
+    if case.get("save_data"):
+        result["files"] = raw["files"]
     return result
 
 
