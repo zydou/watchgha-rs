@@ -295,3 +295,147 @@ pub fn draw_runs(
     status.succeeded = succeeded;
     Ok(status)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A run JSON object; `run_started_at` is a real ISO timestamp computed from
+    // a now-offset so no server or clock pinning is needed. `jobs_url` is served
+    // by the injected datafn below.
+    fn run_json(id: i64, name: &str, sha: &str, started_offset_secs: i64) -> Value {
+        let started = Timestamp::now().as_second() + started_offset_secs;
+        serde_json::json!({
+            "id": id,
+            "name": name,
+            "display_title": format!("run {id}"),
+            "head_branch": "main",
+            "head_sha": sha,
+            "event": "push",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": format!("https://x/runs/{id}"),
+            "jobs_url": format!("https://api/jobs/{id}"),
+            "run_started_at": Timestamp::from_second(started).unwrap().to_string(),
+        })
+    }
+
+    fn events_for(runs: Vec<Value>, only: Option<&[String]>) -> Vec<Vec<Run>> {
+        let body = serde_json::to_string(&serde_json::json!({ "workflow_runs": runs })).unwrap();
+        let urls = vec!["https://api/runs".to_string()];
+        let mut bucketer = DatetimeBucketer::new(5);
+        let df = |url: &str| -> Result<String, WatchGhaError> {
+            if url.contains("/jobs/") {
+                Ok(r#"{"jobs": []}"#.to_string())
+            } else {
+                Ok(body.clone())
+            }
+        };
+        get_events(&urls, &df, only, &mut bucketer).unwrap()
+    }
+
+    #[test]
+    fn dedupes_by_id_keeping_first_position_last_value() {
+        let mut dup = run_json(1, "Tests", "aaa", -60);
+        dup["name"] = "Overwritten".into();
+        let runs = vec![
+            run_json(1, "Tests", "aaa", -60),
+            dup,
+            run_json(2, "Quality", "bbb", -120),
+        ];
+        let events = events_for(runs, None);
+        // Two distinct ids -> two events; the duplicate id keeps the overwritten name.
+        let names: Vec<String> = events.iter().map(|g| g[0].name.clone()).collect();
+        assert!(names.contains(&"Overwritten".to_string()));
+        assert!(names.contains(&"Quality".to_string()));
+        assert_eq!(events.len(), 2);
+    }
+
+    #[test]
+    fn groups_by_sha_into_separate_events() {
+        let runs = vec![
+            run_json(1, "Tests", "aaa", -60),
+            run_json(2, "Quality", "bbb", -60),
+        ];
+        let events = events_for(runs, None);
+        assert_eq!(events.len(), 2, "different shas are different events");
+    }
+
+    #[test]
+    fn same_sha_grouped_into_one_event() {
+        let runs = vec![
+            run_json(1, "Tests", "aaa", -60),
+            run_json(2, "Quality", "aaa", -60),
+        ];
+        let events = events_for(runs, None);
+        assert_eq!(events.len(), 1, "same sha+time+event group together");
+        assert_eq!(events[0].len(), 2);
+    }
+
+    #[test]
+    fn event_with_only_a_github_name_is_dropped() {
+        // A run named under .github/ (an unparsable workflow path) yields an
+        // empty these_names, which is a subset of the seen set, so it is dropped.
+        let runs = vec![run_json(1, ".github/workflows/bad.yml", "aaa", -60)];
+        let events = events_for(runs, None);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn only_filter_retains_matching_names() {
+        let runs = vec![
+            run_json(1, "Tests", "aaa", -60),
+            run_json(2, "Quality", "bbb", -60),
+        ];
+        let only = vec!["tests".to_string()];
+        let events = events_for(runs, Some(&only));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0][0].name, "Tests");
+    }
+
+    #[test]
+    fn drops_events_older_than_seven_days() {
+        let old = run_json(1, "Tests", "aaa", -(8 * 86_400));
+        let recent = run_json(2, "Quality", "bbb", -60);
+        let events = events_for(vec![old, recent], None);
+        let names: Vec<&str> = events.iter().map(|g| g[0].name.as_str()).collect();
+        assert!(names.contains(&"Quality"));
+        assert!(!names.contains(&"Tests"), "8-day-old event is dropped");
+    }
+
+    #[test]
+    fn status_totals_count_conclusions() {
+        // Status totals are computed by draw_runs walking run.jobs, so route
+        // each run's jobs_url (keyed by run name) to one completed job.
+        let mut failed = run_json(1, "Tests", "aaa", -60);
+        failed["conclusion"] = "failure".into();
+        failed["jobs_url"] = "https://api/jobs/tests".into();
+        let mut skipped = run_json(2, "Quality", "bbb", -60);
+        skipped["conclusion"] = "skipped".into();
+        skipped["jobs_url"] = "https://api/jobs/quality".into();
+        let runs = vec![failed, skipped];
+        let body = serde_json::to_string(&serde_json::json!({ "workflow_runs": runs })).unwrap();
+        let urls = vec!["https://api/runs".to_string()];
+        let df = |url: &str| -> Result<String, WatchGhaError> {
+            let job = |concl: &str| {
+                format!(
+                    r#"{{"jobs":[{{"name":"j","status":"completed","conclusion":"{concl}","created_at":"2026-01-18T16:55:30Z"}}]}}"#
+                )
+            };
+            if url.contains("/jobs/tests") {
+                Ok(job("failure"))
+            } else if url.contains("/jobs/quality") {
+                Ok(job("skipped"))
+            } else {
+                Ok(body.clone())
+            }
+        };
+        let mut out = String::new();
+        let status = draw_runs(&urls, &df, &mut out, None).unwrap();
+        assert_eq!(status.total, 2);
+        assert_eq!(status.num_failed, 1, "failure counts as bad");
+        assert_eq!(status.num_succeeded, 1, "skipped is not in CONCLUSION_BAD");
+        assert!(status.done);
+        assert!(!status.succeeded);
+    }
+}
