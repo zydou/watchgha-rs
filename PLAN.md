@@ -5,9 +5,9 @@
 - Upstream pin: <https://github.com/nedbat/watchgha.git> @ 34d1a36096a2b6cfd5fe3d3a7d739d7ab1de9343 (2.7.0)
 - Sync target: none
 - Oracle binary: `.oracle-venv/bin/watchgha` (watchgha 2.7.0, built from `upstream/` @ 34d1a36 via `uv pip install ./upstream`, Python 3.13.18)
-- Working end-to-end: CLI skeleton + URL/GIT resolution + HTTP fetch + DATA aggregation + RENDER (plain) + watch LOOP (incl. Ctrl-C→exit 2 and TTY alt-screen/SIGWINCH redraw) + deprecated `watch_gha_runs` entry point; 7/7 parity cases green
-- Current stage: S3
-- Next: S3 slices — remaining: DATA/RENDER/URL/TIME/HTTP slice ledger ticks and Phase 3 wrap-up (LOOP-* and DEP-1 now done)
+- Working end-to-end: CLI skeleton + URL/GIT resolution + HTTP fetch + DATA aggregation + RENDER (plain) + watch LOOP (incl. Ctrl-C→exit 2 and TTY alt-screen/SIGWINCH redraw) + deprecated `watch_gha_runs` entry point; 9/9 parity cases green
+- Current stage: S4
+- Next: S4 Harden — added parity for `--sha` (`head_sha=` query) and enterprise `GITHUB_SERVER_URL` (SSH remote); remaining edge matrix (SAVE_DATA dump, retry timing, large/binary input, config precedence)
 - Blockers: none
 - CI: all required targets green on `main`; nightly publishes on push (Release run green post PR #2)
 
@@ -131,15 +131,19 @@ Environment variables the original reads:
   - [x] CLI skeleton (clap), error/exit model, config/env loading
   - [x] One self-contained slice end to end (URL/GIT → HTTP → DATA → RENDER → LOOP with 7 mock parity cases)
   - [x] CI green: G-FMT/G-LINT/G-TEST/G-PARITY (parity job wired into release.yml; local gates green)
-- [ ] Phase 3: Slices (bottom-up)
-  - [ ] TIME-* pure helpers
-  - [ ] URL-* / GIT-* repo+branch resolution
-  - [ ] HTTP-* fetching
-  - [ ] DATA-* aggregation
-  - [ ] RENDER-* display
-  - [ ] LOOP-* watch loop + exit codes
+- [x] Phase 3: Slices (bottom-up) — every capability implemented, unit-tested, and covered by the parity corpus; gates green. Residual edge cases (HTTP-2/3/4, SAVE_DATA, retry timing) are hardening, tracked under Phase 4.
+  - [x] TIME-* pure helpers (nice_time, to_datetime, human_key, DatetimeBucketer; 5 unit tests)
+  - [x] URL-* / GIT-* repo+branch resolution (7 urls unit tests + 3 git_help tests; parity: explicit-branch, enterprise SSH, err cases)
+  - [x] HTTP-* fetching (3 unit tests; parity exercises fetch via mock; retry/SAVE_DATA hardened in Phase 4)
+  - [x] DATA-* aggregation (dedupe/sort/group/filter/totals; parity: completed, only-tests)
+  - [x] RENDER-* display (4 unit tests; byte-exact parity on completed/message cases)
+  - [x] LOOP-* watch loop + exit codes
     - [x] LOOP-6 Ctrl-C → stop after final frame, exit 2 (functional: mock in-progress run, SIGINT → exit 2 + `** interrupted **` on stderr)
     - [x] LOOP-3 TTY alt-screen live redraw + SIGWINCH (libc SIGWINCH→RESIZED flag; alt-screen via `\x1b[?1049h/l` with a Drop guard restoring the main screen; Windows swallows SIGWINCH via `cfg(unix)`). Functional pty check: enter/leave each ×1, 6 redraws (initial + poll + SIGWINCH), interrupted→exit 2, OSC reset.
 - [ ] Phase 4: Harden
+  - [x] parity for `--sha` (OPT-SHA: `head_sha=` query) and enterprise `GITHUB_SERVER_URL` (URL-4 SSH remote) — 9/9 cases green
+  - [ ] SAVE_DATA dump parity (HTTP-4; needs harness file-capture + timestamp normalization)
+  - [ ] retry timing / 502 path unit evidence (HTTP-3; behavior confirmed equivalent to upstream, hard to mock deterministically)
+  - [ ] remaining edge matrix: large/binary input, malformed config, env combinations, concurrent invocation
 - [ ] Phase 5: Review
 - [ ] Phase 6: Ship
