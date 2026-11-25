@@ -5,10 +5,17 @@
 - Upstream pin: <https://github.com/nedbat/watchgha.git> @ 34d1a36096a2b6cfd5fe3d3a7d739d7ab1de9343 (2.7.0)
 - Sync target: none
 - Oracle binary: `.oracle-venv/bin/watchgha` (watchgha 2.7.0, built from `upstream/` @ 34d1a36 via `uv pip install ./upstream`, Python 3.13.18)
-- Working end-to-end: CLI skeleton + URL/GIT resolution + HTTP fetch + DATA aggregation + RENDER (plain) + watch LOOP; 7/7 parity cases green
-- Current stage: S2
-- Next: land S2 walking skeleton via PR, then S3 slices (remaining LOOP alt-screen/SIGWINCH/Ctrl-C, DEP-1 deprecated entry point)
+- Working end-to-end: CLI skeleton + URL/GIT resolution + HTTP fetch + DATA aggregation + RENDER (plain) + watch LOOP (incl. Ctrl-C→exit 2) + deprecated `watch_gha_runs` entry point; 7/7 parity cases green
+- Current stage: S3
+- Next: S3 slices — remaining LOOP (TTY alt-screen live redraw + SIGWINCH, LOOP-3); D-2 `.netrc` auth register update
 - Blockers: none
+- CI: all required targets green on `main`; nightly publishes on push (Release run green post PR #2)
+
+Notes from landing S2 (CI/build):
+
+- Replaced `chrono` 0.4.45 with `jiff` 1.0.3: RUSTSEC-2026-0543 flags chrono unmaintained (no fixed upgrade), which failed G-AUDIT and violated INV-DEPS.
+- reqwest uses `rustls-no-provider` + the `ring` crypto provider (not the default `aws-lc-rs`), because aws-lc-sys needs cmake and a musl C compiler that the glibc CI runners lack.
+- `release.yml` installs `musl-tools` on the musl jobs and points cc-rs (`CC_<target>`) and the cargo linker at `musl-gcc` for the **test step only** (via `exec env`, not `$GITHUB_ENV`). Scoping to the test step keeps the release `cargo zigbuild` on zig, so the musl artifact stays a plain static executable (a musl-gcc link produces static-pie, which the artifact-verify grep rejects).
 
 Dependency decisions (INV-DEPS mapping, finalized in S2):
 
@@ -90,12 +97,12 @@ Environment variables the original reads:
 
 ### Divergences (D-###)
 
-| ID  | Capability | Scenario                      | Original behavior                              | Rust behavior                                            | Rationale                                                                                                                                    | Parity case |
-| --- | ---------- | ----------------------------- | ---------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| D-1 | HELP-1     | `watchgha --help`             | click-generated help text                      | clap-generated help; same options/structure, our wording | Help text is not functional (INV-PARITY); wording is rewritten per guide                                                                     | parity: options present, exit 0 |
-| D-2 | HTTP-2     | Private repo, no GITHUB_TOKEN | httpx `NetRCAuth` reads `~/.netrc`             | TBD in S3 (reqwest + .netrc crate or manual parse)       | Must preserve `.netrc` auth or register non-portable                                                                                         | parity: auth header from .netrc |
-| D-3 | DEP-1      | `watch_gha_runs` invoked      | Deprecated warning + sleep + delegate          | Reimplement command + warning + delay                    | Backward-compat entry point is in scope (a CLI)                                                                                              | parity: warning then normal run |
-| D-4 | CLI-1      | `watchgha --version`          | click command has no `--version` flag (errors) | clap `version` → prints `watchgha 2.7.0`, exit 0         | G-SMOKE gate requires a version invocation; version output is non-functional (INV-PARITY), so adding it is safe and expected of a native CLI | smoke: `watchgha --version` exit 0 |
+| ID  | Capability | Scenario                      | Original behavior                                                      | Rust behavior                                                                                                                                                                                                                                                            | Rationale                                                                                                                                                                                                                      | Parity case |
+| --- | ---------- | ----------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- |
+| D-1 | HELP-1     | `watchgha --help`             | click-generated help text                                              | clap-generated help; same options/structure, our wording                                                                                                                                                                                                                 | Help text is not functional (INV-PARITY); wording is rewritten per guide                                                                                                                                                       | parity: options present, exit 0 |
+| D-2 | HTTP-2     | Private repo, no GITHUB_TOKEN | httpx `NetRCAuth` reads `~/.netrc`, sends login/password as HTTP Basic | Implemented as a direct match: prefer `GITHUB_TOKEN` (Bearer), else look up the request host in `~/.netrc` (or `_NETRC`) and send `Basic base64(login:password)`; no token and no matching entry → no auth header (mirrors upstream's `FileNotFoundError` → `auth=None`) | Semantics match the original's `NetRCAuth`; recorded here because `.netrc` auth is exercised only by unit tests, not the parity corpus (the harness forces `GITHUB_TOKEN` so bearer auth is used and no host `.netrc` is read) | unit: `parse_netrc` (machine→login/password), Basic header encoding, token-over-netrc precedence |
+| D-3 | DEP-1      | `watch_gha_runs` invoked      | Deprecated warning + sleep + delegate                                  | Reimplemented: warn (markup stripped on non-TTY stderr) + delay `1+(days/365)*9` + run real command + warn again; dispatched by argv[0] basename                                                                                                                         | Backward-compat entry point is in scope (a CLI)                                                                                                                                                                                | unit: warning text + delay math (integration case would sleep unboundedly, so verified by unit test) |
+| D-4 | CLI-1      | `watchgha --version`          | click command has no `--version` flag (errors)                         | clap `version` → prints `watchgha 2.7.0`, exit 0                                                                                                                                                                                                                         | G-SMOKE gate requires a version invocation; version output is non-functional (INV-PARITY), so adding it is safe and expected of a native CLI                                                                                   | smoke: `watchgha --version` exit 0 |
 
 ### Bugs fixed (B-###)
 
@@ -131,6 +138,8 @@ Environment variables the original reads:
   - [ ] DATA-* aggregation
   - [ ] RENDER-* display
   - [ ] LOOP-* watch loop + exit codes
+    - [x] LOOP-6 Ctrl-C → stop after final frame, exit 2 (functional: mock in-progress run, SIGINT → exit 2 + `** interrupted **` on stderr)
+    - [ ] LOOP-3 TTY alt-screen live redraw + SIGWINCH (render_progress currently a stub; non-TTY path is the parity-exercised one)
 - [ ] Phase 4: Harden
 - [ ] Phase 5: Review
 - [ ] Phase 6: Ship
