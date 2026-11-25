@@ -10,9 +10,22 @@ use crate::error::WatchGhaError;
 /// Status codes the inner fetch retries on (mirrors `RETRY_STATUS_CODES`).
 const RETRY_STATUS_CODES: [u16; 1] = [502];
 
+/// Install the `ring` TLS crypto provider once, before any client is built.
+/// We use reqwest's `rustls-no-provider` (to avoid the default `aws-lc-rs`,
+/// which needs cmake and fails to cross-build for musl), so we must supply a
+/// provider ourselves. `install_default` is a no-op if one is already set.
+fn install_crypto_provider() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 /// Build a blocking HTTP client. Redirects are followed (up to reqwest's
 /// default policy) and the timeout is 30s per request, matching the original.
 fn client() -> reqwest::blocking::Client {
+    install_crypto_provider();
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
