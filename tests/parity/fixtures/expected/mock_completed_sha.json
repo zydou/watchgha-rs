@@ -1,0 +1,22 @@
+{
+  "exit_code": 1,
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/repos/owner/repo/actions/runs",
+      "query": "per_page=100&head_sha=4b2ff58124791953563fdb52e40d9ab79d274d9a"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/owner/repo/actions/runs/1001/jobs",
+      "query": "per_page=100"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/owner/repo/actions/runs/1002/jobs",
+      "query": "per_page=100"
+    }
+  ],
+  "stderr": "",
+  "stdout": "\u001b]9;4;0;0\u001b\\fix: most awesome fix main [push]   4b2ff5812479  @NOW\n   \u2717 failure      Quality            view 1002\n      lint                           \u2717 failure Run lint\n      docs                           \u2713 success\nfix: most awesome fix main [push]   4b2ff5812479  @NOW\n   \u2713 success      Tests              view 1001\n"
+}
