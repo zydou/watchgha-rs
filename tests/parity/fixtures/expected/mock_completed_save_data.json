@@ -1,0 +1,28 @@
+{
+  "exit_code": 1,
+  "files": {
+    "get_000.json": "{\"workflow_runs\": [{\"id\": 1001, \"name\": \"Tests\", \"display_title\": \"fix: most awesome fix\", \"head_branch\": \"main\", \"head_sha\": \"4b2ff58124791953563fdb52e40d9ab79d274d9a\", \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"success\", \"html_url\": \"https://github.com/owner/repo/actions/runs/1001\", \"jobs_url\": \"http://127.0.0.1:44391/repos/owner/repo/actions/runs/1001/jobs\", \"run_started_at\": \"2026-11-25T12:24:02Z\"}, {\"id\": 1002, \"name\": \"Quality\", \"display_title\": \"fix: most awesome fix\", \"head_branch\": \"main\", \"head_sha\": \"4b2ff58124791953563fdb52e40d9ab79d274d9a\", \"event\": \"push\", \"status\": \"completed\", \"conclusion\": \"failure\", \"html_url\": \"https://github.com/owner/repo/actions/runs/1002\", \"jobs_url\": \"http://127.0.0.1:44391/repos/owner/repo/actions/runs/1002/jobs\", \"run_started_at\": \"2026-11-25T12:25:02Z\"}]}",
+    "get_001.json": "{\"jobs\": [{\"id\": 1, \"name\": \"unit\", \"status\": \"completed\", \"conclusion\": \"success\", \"created_at\": \"2026-11-25T12:24:22Z\"}]}",
+    "get_002.json": "{\"jobs\": [{\"id\": 2, \"name\": \"lint\", \"status\": \"completed\", \"conclusion\": \"failure\", \"created_at\": \"2026-11-25T12:25:12Z\", \"steps\": [{\"name\": \"Set up\", \"status\": \"completed\", \"conclusion\": \"success\"}, {\"name\": \"Run lint\", \"status\": \"completed\", \"conclusion\": \"failure\"}]}, {\"id\": 3, \"name\": \"docs\", \"status\": \"completed\", \"conclusion\": \"success\", \"created_at\": \"2026-11-25T12:25:22Z\"}]}",
+    "get_index.txt": "# URLs fetched:\nget_000.json: http://127.0.0.1:44391/repos/owner/repo/actions/runs?per_page=100&branch=main\nget_001.json: http://127.0.0.1:44391/repos/owner/repo/actions/runs/1001/jobs?per_page=100\nget_002.json: http://127.0.0.1:44391/repos/owner/repo/actions/runs/1002/jobs?per_page=100\n"
+  },
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/repos/owner/repo/actions/runs",
+      "query": "per_page=100&branch=main"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/owner/repo/actions/runs/1001/jobs",
+      "query": "per_page=100"
+    },
+    {
+      "method": "GET",
+      "path": "/repos/owner/repo/actions/runs/1002/jobs",
+      "query": "per_page=100"
+    }
+  ],
+  "stderr": "",
+  "stdout": "\u001b]9;4;0;0\u001b\\fix: most awesome fix main [push]   4b2ff5812479  @NOW\n   \u2717 failure      Quality            view 1002\n      lint                           \u2717 failure Run lint\n      docs                           \u2713 success\nfix: most awesome fix main [push]   4b2ff5812479  @NOW\n   \u2713 success      Tests              view 1001\n"
+}
