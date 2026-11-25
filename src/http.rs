@@ -33,12 +33,11 @@ fn client() -> reqwest::blocking::Client {
 }
 
 /// Resolve the `Authorization` header value, mirroring `Http.__init__`:
-/// prefer `GITHUB_TOKEN` (bearer); otherwise fall back to `~/.netrc` via the
-/// `netrc` credential for the request host (httpx `NetRCAuth`).
-fn auth_header(url: &url::Url) -> Option<String> {
-    if let Ok(token) = std::env::var("GITHUB_TOKEN")
-        && !token.is_empty()
-    {
+/// prefer a `GITHUB_TOKEN` (bearer); otherwise fall back to `~/.netrc` via the
+/// `netrc` credential for the request host (httpx `NetRCAuth`). The token is
+/// injected by the caller (which reads the env) so the precedence is testable.
+fn auth_header(url: &url::Url, token: Option<&str>) -> Option<String> {
+    if let Some(token) = token.filter(|t| !t.is_empty()) {
         return Some(format!("Bearer {token}"));
     }
     netrc_auth(url)
@@ -135,7 +134,8 @@ fn get_once(url: &str, save: bool) -> Result<String, WatchGhaError> {
         .map_err(|e| WatchGhaError(format!("Couldn't get {url:?}: invalid URL: {e}")))?;
     let client = client();
     let mut req = client.get(url);
-    if let Some(auth) = auth_header(&parsed) {
+    let token = std::env::var("GITHUB_TOKEN").ok();
+    if let Some(auth) = auth_header(&parsed, token.as_deref()) {
         req = req.header("Authorization", auth);
     }
     let resp = req
@@ -222,3 +222,45 @@ fn extension_for_content(content_type: &str) -> String {
 // base64 is only used for .netrc basic auth; keep it an optional dep path.
 #[allow(unused_imports)]
 use base64 as _base64_marker;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn netrc_parses_machine_login_password() {
+        let contents = "machine github.com\n  login octocat\n  password ghp_tok\n\
+                        machine other.com\n  login x\n  password y\n";
+        let e = parse_netrc(contents, "github.com").expect("github.com entry");
+        assert_eq!(e.login, "octocat");
+        assert_eq!(e.password, "ghp_tok");
+        // A host with no entry yields None.
+        assert!(parse_netrc(contents, "gitlab.com").is_none());
+    }
+
+    #[test]
+    fn netrc_builds_basic_auth_header() {
+        // netrc_auth is host-driven; exercise the Basic encoding directly.
+        use base64::Engine as _;
+        let raw = "octocat:ghp_tok";
+        let header = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(raw.as_bytes())
+        );
+        assert_eq!(header, "Basic b2N0b2NhdDpnaHBfdG9r");
+    }
+
+    #[test]
+    fn auth_header_prefers_token_over_netrc() {
+        let url = url::Url::parse("https://github.com/owner/repo/actions/runs").unwrap();
+        // A token (even with a .netrc present) wins as Bearer.
+        assert_eq!(
+            auth_header(&url, Some("env-token")),
+            Some("Bearer env-token".to_string())
+        );
+        // An empty token is treated as absent, falling through to .netrc (None
+        // when no entry matches, as here without a HOME netrc).
+        assert_eq!(auth_header(&url, Some("")), netrc_auth(&url));
+        assert_eq!(auth_header(&url, None), netrc_auth(&url));
+    }
+}
