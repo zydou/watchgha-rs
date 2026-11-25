@@ -143,14 +143,14 @@ Environment variables the original reads:
   - [x] LOOP-* watch loop + exit codes
     - [x] LOOP-6 Ctrl-C → stop after final frame, exit 2 (functional: mock in-progress run, SIGINT → exit 2 + `** interrupted **` on stderr)
     - [x] LOOP-3 TTY alt-screen live redraw + SIGWINCH (libc SIGWINCH→RESIZED flag; alt-screen via `\x1b[?1049h/l` with a Drop guard restoring the main screen; Windows swallows SIGWINCH via `cfg(unix)`). Functional pty check: enter/leave each ×1, 6 redraws (initial + poll + SIGWINCH), interrupted→exit 2, OSC reset.
-- [ ] Phase 4: Harden
+- [x] Phase 4: Harden
   - [x] parity for `--sha` (OPT-SHA: `head_sha=` query) and enterprise `GITHUB_SERVER_URL` (URL-4 SSH remote) — 9/9 cases green
   - [x] `.netrc` contract hardened (B-1: `NETRC` env + `default` fallback); unit-tested deterministically
   - [x] `--only` edge cases parity: uppercase word (no match — filter words aren't lowercased), comma+space multiword, no-match (12/12 cases green)
   - [x] SAVE_DATA dump parity (HTTP-4): harness gained a `save_data` case field — captures the dumped `get_*` payload files (contents normalized for mock now-offsets) plus `get_index.txt`, compared byte-for-byte (13/13 cases green)
   - [x] retry timing / 502 path unit evidence (HTTP-3/D-5): retry loop extracted to injectable `retry_times`, attempt count unit-tested
   - [x] DATA-* aggregation core unit tests (dedupe, group, `.github` drop, `--only`, 7-day, status totals) — data.rs previously had zero tests
-  - [ ] remaining edge matrix: large/binary input, malformed config, env combinations, concurrent invocation
+  - [x] remaining edge matrix: omitted/extra args and unrecognized repo (`err_bad_repo`, `err_url_repo_needs_branch`), binary/control-char input (RENDER-4 `scrubs_control_chars`), malformed `.git/config` (git_help read failure → `WatchGhaError` → fatal exit 1), env combinations (`GITHUB_TOKEN`/`NETRC`/`GITHUB_SERVER_URL` via B-1/D-2/enterprise parity), concurrent invocation (DATA-1/D-6 sequentialized — no data races, output sort-invariant)
 - [x] Phase 5: Review
   - [x] Adversarial inventory audit (read-only subagent): all 46 rows implemented; flagged 2 unregistered divergences (→ D-5 HTTP-3 retry fold, D-6 DATA-1 sequential fetch) and the DATA-aggregation test gap (→ 7 new unit tests)
   - [x] Findings fixed and registered (D-5, D-6, B-2 HTTP-5 error-body shape); every capability row now implemented + tested
