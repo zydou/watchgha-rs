@@ -171,6 +171,27 @@ jobs:
       - name: cache
         uses: Swatinem/rust-cache@v2
 
+      # `ring` (our rustls crypto provider) compiles C through cc-rs, which for a
+      # musl target looks for `<arch>-linux-musl-gcc`. The runner is glibc-based
+      # and has no musl C toolchain, so install `musl-gcc` and point both cc-rs
+      # and the cargo linker at it. Scoped to the musl jobs; the gnu/darwin jobs
+      # use the runner's native toolchain.
+      - name: Install musl toolchain
+        if: ${{ contains(matrix.target, 'musl') }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          target="${{ matrix.target }}"
+          # cc-rs reads CC_<target> (dashes ok); cargo's linker var is uppercased
+          # with underscores, e.g. CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER.
+          cargo_linker="CARGO_TARGET_$(echo "$target" | tr '[:lower:]-' '[:upper:]_')_LINKER"
+          {
+            echo "CC_${target}=musl-gcc"
+            echo "AR_${target}=ar"
+            echo "${cargo_linker}=musl-gcc"
+          } >> "$GITHUB_ENV"
+
       # Plain `cargo test`, not `cargo zigbuild test`: `cargo zigbuild` only wraps `cargo build`
       # (it drives zig as the linker for cross-compiling), and has no `test` subcommand. Every
       # target here runs on a runner whose arch matches it, so each tests natively and zig is not
