@@ -4,7 +4,7 @@
 
 - Upstream pin: <https://github.com/nedbat/watchgha.git> @ 34d1a36096a2b6cfd5fe3d3a7d739d7ab1de9343 (2.7.0)
 - Sync target: none
-- Oracle binary: none yet (to be captured in S1)
+- Oracle binary: `.oracle-venv/bin/watchgha` (watchgha 2.7.0, built from `upstream/` @ 34d1a36 via `uv pip install ./upstream`, Python 3.13.18)
 - Working end-to-end: none yet (stub prints version)
 - Current stage: S0
 - Next: finish S0 inventory classification, then S1 oracle
@@ -107,15 +107,15 @@ Environment variables the original reads:
 
 ## Phases
 
-- [ ] Phase 0: Recon
+- [x] Phase 0: Recon
   - [x] Commit starting scaffold (cargo check, Cargo.lock)
   - [x] Pin upstream @ 34d1a36, adopt Apache-2.0 license
-  - [ ] Full inventory classified (this table) — confirm every row has class + slice
-  - [ ] Push main, install rulesets
-- [ ] Phase 1: Oracle
-  - [ ] Build `tests/parity/` harness (capture/check/normalize)
-  - [ ] Capture from original v2.7.0 binary; record provenance
-  - [ ] Self-check green against original
+  - [x] Full inventory classified (this table) — every row has class + slice
+  - [x] Push main, install rulesets (main + tags active)
+- [x] Phase 1: Oracle
+  - [x] Build `tests/parity/` harness (capture/check/selfcheck + mock GitHub API server)
+  - [x] Capture from original v2.7.0 binary; provenance recorded in Progress snapshot
+  - [x] Self-check green against original (7/7 cases deterministic)
 - [ ] Phase 2: Skeleton
   - [ ] CLI skeleton (clap), error/exit model, config/env loading
   - [ ] One self-contained slice end to end

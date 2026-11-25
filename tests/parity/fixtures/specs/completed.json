@@ -1,0 +1,67 @@
+{
+  "routes": {
+    "/repos/owner/repo/actions/runs": {
+      "workflow_runs": [
+        {
+          "id": 1001,
+          "name": "Tests",
+          "display_title": "fix: most awesome fix",
+          "head_branch": "main",
+          "head_sha": "4b2ff58124791953563fdb52e40d9ab79d274d9a",
+          "event": "push",
+          "status": "completed",
+          "conclusion": "success",
+          "html_url": "https://github.com/owner/repo/actions/runs/1001",
+          "jobs_url": "__API__/repos/owner/repo/actions/runs/1001/jobs",
+          "run_started_at": "-120"
+        },
+        {
+          "id": 1002,
+          "name": "Quality",
+          "display_title": "fix: most awesome fix",
+          "head_branch": "main",
+          "head_sha": "4b2ff58124791953563fdb52e40d9ab79d274d9a",
+          "event": "push",
+          "status": "completed",
+          "conclusion": "failure",
+          "html_url": "https://github.com/owner/repo/actions/runs/1002",
+          "jobs_url": "__API__/repos/owner/repo/actions/runs/1002/jobs",
+          "run_started_at": "-60"
+        }
+      ]
+    },
+    "/repos/owner/repo/actions/runs/1001/jobs": {
+      "jobs": [
+        {
+          "id": 1,
+          "name": "unit",
+          "status": "completed",
+          "conclusion": "success",
+          "created_at": "-100"
+        }
+      ]
+    },
+    "/repos/owner/repo/actions/runs/1002/jobs": {
+      "jobs": [
+        {
+          "id": 2,
+          "name": "lint",
+          "status": "completed",
+          "conclusion": "failure",
+          "created_at": "-50",
+          "steps": [
+            {"name": "Set up", "status": "completed", "conclusion": "success"},
+            {"name": "Run lint", "status": "completed", "conclusion": "failure"}
+          ]
+        },
+        {
+          "id": 3,
+          "name": "docs",
+          "status": "completed",
+          "conclusion": "success",
+          "created_at": "-40"
+        }
+      ]
+    }
+  }
+}

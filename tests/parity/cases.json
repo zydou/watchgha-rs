@@ -1,0 +1,52 @@
+[
+  {
+    "name": "help",
+    "kind": "plain",
+    "args": ["--help"]
+  },
+  {
+    "name": "err_url_repo_needs_branch",
+    "kind": "plain",
+    "args": ["https://github.com/me/myproject.git"]
+  },
+  {
+    "name": "err_bad_repo",
+    "kind": "plain",
+    "args": ["what!?"]
+  },
+  {
+    "name": "mock_completed",
+    "kind": "mock",
+    "spec": "completed",
+    "local_repo": {
+      "remote": "https://github.com/owner/repo.git",
+      "branch": "main"
+    }
+  },
+  {
+    "name": "mock_completed_only_tests",
+    "kind": "mock",
+    "spec": "completed",
+    "args": ["--only", "tests"],
+    "local_repo": {
+      "remote": "https://github.com/owner/repo.git",
+      "branch": "main"
+    }
+  },
+  {
+    "name": "mock_completed_message",
+    "kind": "mock",
+    "spec": "completed",
+    "args": ["--message", "hello world"],
+    "local_repo": {
+      "remote": "https://github.com/owner/repo.git",
+      "branch": "main"
+    }
+  },
+  {
+    "name": "mock_completed_explicit_branch",
+    "kind": "mock",
+    "spec": "completed",
+    "args": ["https://github.com/owner/repo.git", "feature-branch"]
+  }
+]
