@@ -69,13 +69,40 @@ jobs:
       - name: cargo audit
         run: cargo audit
 
+  parity:
+    # Replay the committed parity fixtures against the freshly built Rust binary.
+    # Fixtures were captured from the original once and are checked in, so this
+    # needs neither the original binary nor the upstream checkout (G-PARITY).
+    name: parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: build (dev)
+        run: cargo build --locked
+
+      - name: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+
+      - name: parity check
+        run: python3 tests/parity/harness.py --mode check --rust target/debug/watchgha
+
   target:
     # One job per (platform, ABI) pair. A target publishes its artifact only when its own test AND
     # build both succeed and the run was not a pull request. Releases are per-target, not atomic: if
     # one target fails on a push, the ones that succeeded still publish and the failed one is simply
     # absent from that release.
     name: ${{ matrix.target }}
-    needs: [lint]
+    needs: [lint, parity]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -143,6 +170,27 @@ jobs:
 
       - name: cache
         uses: Swatinem/rust-cache@v2
+
+      # `ring` (our rustls crypto provider) compiles C through cc-rs, which for a
+      # musl target looks for `<arch>-linux-musl-gcc`. The runner is glibc-based
+      # and has no musl C toolchain, so install `musl-gcc` and point both cc-rs
+      # and the cargo linker at it. Scoped to the musl jobs; the gnu/darwin jobs
+      # use the runner's native toolchain.
+      - name: Install musl toolchain
+        if: ${{ contains(matrix.target, 'musl') }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          target="${{ matrix.target }}"
+          # cc-rs reads CC_<target> (dashes ok); cargo's linker var is uppercased
+          # with underscores, e.g. CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER.
+          cargo_linker="CARGO_TARGET_$(echo "$target" | tr '[:lower:]-' '[:upper:]_')_LINKER"
+          {
+            echo "CC_${target}=musl-gcc"
+            echo "AR_${target}=ar"
+            echo "${cargo_linker}=musl-gcc"
+          } >> "$GITHUB_ENV"
 
       # Plain `cargo test`, not `cargo zigbuild test`: `cargo zigbuild` only wraps `cargo build`
       # (it drives zig as the linker for cross-compiling), and has no `test` subcommand. Every

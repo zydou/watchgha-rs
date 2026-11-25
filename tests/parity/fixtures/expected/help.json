@@ -1,0 +1,15 @@
+{
+  "exit_code": 0,
+  "stderr": "",
+  "structural_stdout": [
+    "--sha",
+    "--poll",
+    "--wait",
+    "--wait-for-start",
+    "--only",
+    "--message",
+    "--help",
+    "REPO",
+    "BRANCH"
+  ]
+}
