@@ -182,17 +182,28 @@ pub fn get_events(
             let body = datafn(&jobs_url)?;
             let parsed: Value = serde_json::from_str(&body)
                 .map_err(|e| WatchGhaError(format!("Couldn't parse jobs JSON: {e}")))?;
-            let mut jobs: Vec<Job> = parsed
+            let jobs: Vec<Job> = parsed
                 .get("jobs")
                 .and_then(|x| x.as_array())
                 .map(|arr| arr.iter().map(to_job).collect())
                 .unwrap_or_default();
-            jobs.sort_by(|a, b| {
-                let ka = (a.created_dt.as_millisecond(), human_key(&a.name));
-                let kb = (b.created_dt.as_millisecond(), human_key(&b.name));
-                ka.cmp(&kb)
-            });
-            r.jobs = jobs;
+            // Sort jobs the way the original's `job_sort_key` does:
+            // `(bucketer.defuzz(created_dt), human_key(name))`. The bucketer is
+            // stateful, so precompute each key once in list order — mirroring
+            // Python's `sorted(key=...)`, which evaluates the key once per
+            // element — rather than calling `defuzz` inside the comparator
+            // (which would register instants in comparison order). Jobs whose
+            // `created_at` fall in the same bucket tie on time and are ordered
+            // by `human_key(name)` (D-12).
+            let mut keyed: Vec<_> = jobs
+                .into_iter()
+                .map(|j| {
+                    let key = (bucketer.defuzz(j.created_dt), human_key(&j.name));
+                    (key, j)
+                })
+                .collect();
+            keyed.sort_by(|a, b| a.0.cmp(&b.0));
+            r.jobs = keyed.into_iter().map(|(_, j)| j).collect();
         }
 
         run_names_seen.extend(these_names);
@@ -437,5 +448,75 @@ mod tests {
         assert_eq!(status.num_succeeded, 1, "skipped is not in CONCLUSION_BAD");
         assert!(status.done);
         assert!(!status.succeeded);
+    }
+
+    #[test]
+    fn jobs_in_same_bucket_sort_by_name() {
+        // Two jobs whose `created_at` are 2s apart land in the same defuzz
+        // bucket (window=5), so the original's `job_sort_key` ties them on time
+        // and orders by `human_key(name)` — even though raw-time order is the
+        // reverse. base=1_000_000 is divisible by 5, so the collapse is
+        // deterministic (D-12).
+        let base = Timestamp::from_second(1_000_000).unwrap();
+        let early = base.to_string();
+        let late = Timestamp::from_second(1_000_002).unwrap().to_string();
+        let events = events_with_jobs(vec![
+            ("zeta", &early), // earlier, but sorts later by name
+            ("alpha", &late), // later, but sorts first by name
+        ]);
+        let job_names: Vec<&str> = events[0][0].jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(
+            job_names,
+            vec!["alpha", "zeta"],
+            "same-bucket jobs order by name, not raw creation time"
+        );
+    }
+
+    #[test]
+    fn jobs_in_different_buckets_sort_by_time() {
+        // 10s apart -> different buckets, so they are NOT tied and order by
+        // raw creation time (the name order is the reverse).
+        let base = Timestamp::from_second(1_000_000).unwrap();
+        let early = base.to_string();
+        let late = Timestamp::from_second(1_000_010).unwrap().to_string();
+        let events = events_with_jobs(vec![
+            ("zeta", &early), // earlier bucket
+            ("alpha", &late), // later bucket
+        ]);
+        let job_names: Vec<&str> = events[0][0].jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(
+            job_names,
+            vec!["zeta", "alpha"],
+            "different-bucket jobs still order by creation time"
+        );
+    }
+
+    /// One run ("Tests") whose jobs_url serves the given (name, created_at)
+    /// jobs, aggregated through `get_events`.
+    fn events_with_jobs(jobs: Vec<(&str, &str)>) -> Vec<Vec<Run>> {
+        let run = run_json(1, "Tests", "aaa", -60);
+        let body = serde_json::to_string(&serde_json::json!({ "workflow_runs": [run] })).unwrap();
+        let job_objs: Vec<Value> = jobs
+            .iter()
+            .map(|(name, created)| {
+                serde_json::json!({
+                    "name": name,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "created_at": created,
+                })
+            })
+            .collect();
+        let jobs_body = serde_json::to_string(&serde_json::json!({ "jobs": job_objs })).unwrap();
+        let urls = vec!["https://api/runs".to_string()];
+        let df = |url: &str| -> Result<String, WatchGhaError> {
+            if url.contains("/jobs/") {
+                Ok(jobs_body.clone())
+            } else {
+                Ok(body.clone())
+            }
+        };
+        let mut bucketer = DatetimeBucketer::new(5);
+        get_events(&urls, &df, None, &mut bucketer).unwrap()
     }
 }
