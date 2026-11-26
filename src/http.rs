@@ -332,14 +332,35 @@ fn save_payload(url: &str, text: &str, content_type: &str) {
 /// Derive a filename extension from a `content-type` header, mirroring the
 /// original's `extension_for_content` (strip params, then `mimetypes
 /// .guess_extension`). GitHub always returns JSON, so `.json` is the practical
-/// result; fall back to it for anything unrecognized.
+/// result; the table below covers the common MIME types `mimetypes` knows so a
+/// non-JSON payload still gets a sensible extension (D-10).
+///
+/// Note: the original's `mimetypes.guess_extension` is OS-dependent (it also
+/// reads system MIME files like `/etc/mime.types`, and its `.htm`-vs-`.html`
+/// choice varies by platform), so this static table is aligned for the common
+/// types but cannot be byte-identical to `mimetypes` on every host.
 fn extension_for_content(content_type: &str) -> String {
     let mime = content_type.split(';').next().unwrap_or("").trim();
     match mime {
-        "application/json" => ".json".to_string(),
-        "text/plain" => ".txt".to_string(),
-        _ => ".json".to_string(),
+        "application/json" => ".json",
+        "text/plain" => ".txt",
+        "text/html" => ".html",
+        "text/csv" => ".csv",
+        "text/markdown" => ".md",
+        "text/xml" | "application/xml" => ".xml",
+        "image/png" => ".png",
+        "image/jpeg" => ".jpg",
+        "image/gif" => ".gif",
+        "image/svg+xml" => ".svg",
+        "application/pdf" => ".pdf",
+        "application/zip" => ".zip",
+        "application/gzip" => ".gz",
+        "application/octet-stream" => ".bin",
+        // GitHub's API returns JSON; default unknown types to `.json` like the
+        // practical path in the original.
+        _ => ".json",
     }
+    .to_string()
 }
 
 // base64 is only used for .netrc basic auth; keep it an optional dep path.
@@ -349,6 +370,25 @@ use base64 as _base64_marker;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extension_for_content_maps_common_types() {
+        // Mirrors `mimetypes.guess_extension` for the common types; params are
+        // stripped; unknown types fall back to `.json` (GitHub's actual type).
+        assert_eq!(extension_for_content("application/json"), ".json");
+        assert_eq!(
+            extension_for_content("application/json; charset=utf-8"),
+            ".json"
+        );
+        assert_eq!(extension_for_content("text/plain"), ".txt");
+        assert_eq!(extension_for_content("text/html"), ".html");
+        assert_eq!(extension_for_content("image/png"), ".png");
+        assert_eq!(extension_for_content("image/jpeg"), ".jpg");
+        assert_eq!(extension_for_content("application/pdf"), ".pdf");
+        assert_eq!(extension_for_content("text/xml"), ".xml");
+        assert_eq!(extension_for_content("application/xml"), ".xml");
+        assert_eq!(extension_for_content("weird/type"), ".json");
+    }
 
     #[test]
     fn netrc_parses_machine_login_password() {

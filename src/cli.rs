@@ -20,7 +20,11 @@ pub struct Cli {
     pub sha: Option<String>,
 
     /// How many seconds between refreshes.
-    #[arg(long, default_value_t = 15)]
+    ///
+    /// `allow_negative_numbers` mirrors click, which consumes a negative value
+    /// given with a space (`--poll -5`) as the option's value rather than
+    /// treating it as a flag (D-11). The equals form (`--poll=-5`) always worked.
+    #[arg(long, default_value_t = 15, allow_negative_numbers = true)]
     pub poll: i64,
 
     /// Wait for jobs to start.
@@ -52,5 +56,38 @@ impl Cli {
         self.only
             .as_ref()
             .map(|only| only.split(',').map(|w| w.trim().to_string()).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poll_default_is_15() {
+        let cli = Cli::parse_from(["watchgha", "."]);
+        assert_eq!(cli.poll, 15);
+        assert_eq!(cli.repo, ".");
+    }
+
+    #[test]
+    fn poll_accepts_negative_value_with_space() {
+        // click consumes `--poll -5` (space-separated negative) as the value;
+        // `allow_negative_numbers` reproduces that so the CLI doesn't error at
+        // parse time (D-11).
+        let cli = Cli::parse_from(["watchgha", "--poll", "-5", "."]);
+        assert_eq!(cli.poll, -5);
+    }
+
+    #[test]
+    fn poll_accepts_negative_value_with_equals() {
+        let cli = Cli::parse_from(["watchgha", "--poll=-5", "."]);
+        assert_eq!(cli.poll, -5);
+    }
+
+    #[test]
+    fn wait_has_visible_alias() {
+        let cli = Cli::parse_from(["watchgha", "--wait-for-start", "."]);
+        assert!(cli.wait);
     }
 }
